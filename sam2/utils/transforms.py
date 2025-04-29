@@ -116,3 +116,43 @@ class SAM2Transforms(nn.Module):
 
         masks = F.interpolate(masks, orig_hw, mode="bilinear", align_corners=False)
         return masks
+
+
+# TTA augmentation ops and inverses
+import torchvision.transforms.functional as TF
+from torchvision.transforms.functional import InterpolationMode
+
+def horizontal_flip_image(image: torch.Tensor) -> torch.Tensor:
+    """Flip image horizontally."""
+    return torch.flip(image, dims=[-1])
+
+
+def horizontal_flip_mask(mask: torch.Tensor) -> torch.Tensor:
+    """Flip mask horizontally."""
+    return torch.flip(mask, dims=[-1])
+
+
+def vertical_flip_image(image: torch.Tensor) -> torch.Tensor:
+    """Flip image vertically."""
+    return torch.flip(image, dims=[-2])
+
+
+def vertical_flip_mask(mask: torch.Tensor) -> torch.Tensor:
+    """Flip mask vertically."""
+    return torch.flip(mask, dims=[-2])
+
+
+def rotate_image(image: torch.Tensor, angle: float) -> torch.Tensor:
+    """Rotate image by angle (degrees) with bilinear interpolation."""
+    return TF.rotate(image, angle=angle, interpolation=InterpolationMode.BILINEAR)
+
+
+def rotate_mask(mask: torch.Tensor, angle: float) -> torch.Tensor:
+    """Inverse rotate mask by angle with nearest neighbor to avoid artifacts."""
+    return TF.rotate(mask, angle=-angle, interpolation=InterpolationMode.NEAREST)
+
+
+def adjust_brightness_contrast(image: torch.Tensor, brightness: float, contrast: float) -> torch.Tensor:
+    """Adjust brightness and contrast of image."""
+    img = TF.adjust_contrast(image, contrast)
+    return TF.adjust_brightness(img, brightness)
