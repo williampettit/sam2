@@ -12,7 +12,6 @@ from sam2.utils.transforms import (
     vertical_flip_mask,
     rotate_image,
     rotate_mask,
-    adjust_brightness_contrast,
 )
 
 class TTAManager:

@@ -150,9 +150,3 @@ def rotate_image(image: torch.Tensor, angle: float) -> torch.Tensor:
 def rotate_mask(mask: torch.Tensor, angle: float) -> torch.Tensor:
     """Inverse rotate mask by angle with nearest neighbor to avoid artifacts."""
     return TF.rotate(mask, angle=-angle, interpolation=InterpolationMode.NEAREST)
-
-
-def adjust_brightness_contrast(image: torch.Tensor, brightness: float, contrast: float) -> torch.Tensor:
-    """Adjust brightness and contrast of image."""
-    img = TF.adjust_contrast(image, contrast)
-    return TF.adjust_brightness(img, brightness)

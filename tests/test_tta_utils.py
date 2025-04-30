@@ -5,7 +5,6 @@ from sam2.utils.transforms import (
     horizontal_flip_image, horizontal_flip_mask,
     vertical_flip_image, vertical_flip_mask,
     rotate_image, rotate_mask,
-    adjust_brightness_contrast
 )
 from sam2.utils.tta import TTAManager
 
@@ -34,12 +33,6 @@ def test_rotate_mask_inversion_identity():
     inv = rotate_mask(rotated, 90)
     # For binary mask with nearest neighbor, invert should match original
     assert torch.equal(inv, x)
-
-
-def test_adjust_brightness_contrast_change():
-    x = torch.ones(1,3,10,10)
-    out = adjust_brightness_contrast(x, brightness=1.5, contrast=0.5)
-    assert not torch.equal(out, x)
 
 
 def test_tta_manager_application_and_aggregation():
