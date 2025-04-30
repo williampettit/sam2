@@ -9,13 +9,15 @@ from collections import OrderedDict
 
 import torch
 import torch.nn.functional as F
+import numpy as np
 
 from tqdm import tqdm
+from PIL import Image as PILImage
 
 from sam2.modeling.sam2_base import NO_OBJ_SCORE, SAM2Base
 from sam2.utils.misc import concat_points, fill_holes_in_mask_scores, load_video_frames
-import numpy as np
-from sam2.utils.tta import TTAManager
+from sam2.utils.tta import TTAManager  # Import TTA manager
+
 
 class SAM2VideoPredictor(SAM2Base):
     """The predictor class to handle user interactions and manage inference states."""
@@ -31,6 +33,7 @@ class SAM2VideoPredictor(SAM2Base):
         # if `add_all_frames_to_correct_as_cond` is True, we also append to the conditioning frame list any frame that receives a later correction click
         # if `add_all_frames_to_correct_as_cond` is False, we conditioning frame list to only use those initial conditioning frames
         add_all_frames_to_correct_as_cond=False,
+        mask_threshold=0.0,
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -38,6 +41,9 @@ class SAM2VideoPredictor(SAM2Base):
         self.non_overlap_masks = non_overlap_masks
         self.clear_non_cond_mem_around_input = clear_non_cond_mem_around_input
         self.add_all_frames_to_correct_as_cond = add_all_frames_to_correct_as_cond
+        self.mask_threshold = mask_threshold
+        # Initialize TTA manager for test-time augmentations
+        self._tta_manager = TTAManager(threshold=mask_threshold)
 
     @torch.inference_mode()
     def init_state(
@@ -169,7 +175,6 @@ class SAM2VideoPredictor(SAM2Base):
         clear_old_points=True,
         normalize_coords=True,
         box=None,
-        use_tta=False,
     ):
         """Add new points to a frame."""
         obj_idx = self._obj_id_to_idx(inference_state, obj_id)
@@ -277,7 +282,6 @@ class SAM2VideoPredictor(SAM2Base):
             # them into memory.
             run_mem_encoder=False,
             prev_sam_mask_logits=prev_sam_mask_logits,
-            use_tta=use_tta,
         )
         # Add the output to the output dict (to be used as future memory)
         obj_temp_output_dict[storage_key][frame_idx] = current_out
@@ -306,7 +310,6 @@ class SAM2VideoPredictor(SAM2Base):
         frame_idx,
         obj_id,
         mask,
-        use_tta=False,
     ):
         """Add new mask to a frame."""
         obj_idx = self._obj_id_to_idx(inference_state, obj_id)
@@ -367,7 +370,6 @@ class SAM2VideoPredictor(SAM2Base):
             # allows us to enforce non-overlapping constraints on all objects before encoding
             # them into memory.
             run_mem_encoder=False,
-            use_tta=use_tta,
         )
         # Add the output to the output dict (to be used as future memory)
         obj_temp_output_dict[storage_key][frame_idx] = current_out
@@ -548,13 +550,162 @@ class SAM2VideoPredictor(SAM2Base):
                 obj_output_dict["non_cond_frame_outputs"].pop(frame_idx, None)
 
     @torch.inference_mode()
+    def propagate_in_video_with_tta(
+        self,
+        inference_state,
+        start_frame_idx=None,
+        max_frame_num_to_track=None,
+        reverse=False,
+    ):
+        """
+        TTA-enabled version of propagate_in_video: apply test-time augmentations to each frame
+        during tracking to improve mask quality. This method follows the same workflow as the
+        original propagate_in_video but applies augmentations to each frame before prediction.
+        
+        Arguments are the same as propagate_in_video.
+        """
+        self.propagate_in_video_preflight(inference_state)
+
+        obj_ids = inference_state["obj_ids"]
+        num_frames = inference_state["num_frames"]
+        batch_size = self._get_obj_num(inference_state)
+
+        # set start index, end index, and processing order
+        if start_frame_idx is None:
+            # default: start from the earliest frame with input points
+            start_frame_idx = min(
+                t
+                for obj_output_dict in inference_state["output_dict_per_obj"].values()
+                for t in obj_output_dict["cond_frame_outputs"]
+            )
+        if max_frame_num_to_track is None:
+            # default: track all the frames in the video
+            max_frame_num_to_track = num_frames
+        if reverse:
+            end_frame_idx = max(start_frame_idx - max_frame_num_to_track, 0)
+            if start_frame_idx > 0:
+                processing_order = range(start_frame_idx, end_frame_idx - 1, -1)
+            else:
+                processing_order = []  # skip reverse tracking if starting from frame 0
+        else:
+            end_frame_idx = min(
+                start_frame_idx + max_frame_num_to_track, num_frames - 1
+            )
+            processing_order = range(start_frame_idx, end_frame_idx + 1)
+
+        for frame_idx in tqdm(processing_order, desc="propagate in video with TTA"):
+            pred_masks_per_obj = [None] * batch_size
+            for obj_idx in range(batch_size):
+                obj_output_dict = inference_state["output_dict_per_obj"][obj_idx]
+                # We skip those frames already in consolidated outputs (these are frames
+                # that received input clicks or mask). Note that we cannot directly run
+                # batched forward on them via `_run_single_frame_inference` because the
+                # number of clicks on each object might be different.
+                if frame_idx in obj_output_dict["cond_frame_outputs"]:
+                    storage_key = "cond_frame_outputs"
+                    current_out = obj_output_dict[storage_key][frame_idx]
+                    device = inference_state["device"]
+                    pred_masks = current_out["pred_masks"].to(device, non_blocking=True)
+                    if self.clear_non_cond_mem_around_input:
+                        # clear non-conditioning memory of the surrounding frames
+                        self._clear_obj_non_cond_mem_around_input(
+                            inference_state, frame_idx, obj_idx
+                        )
+                else:
+                    storage_key = "non_cond_frame_outputs"
+                    
+                    # Extract the current frame image
+                    device = inference_state["device"]
+                    frame_image = inference_state["images"][frame_idx].to(device).float().unsqueeze(0)
+                    
+                    # Apply TTA to the current frame
+                    # Convert tensor to PIL image for TTA
+                    frame_np = frame_image.squeeze(0).permute(1, 2, 0).cpu().numpy()
+                    frame_np = (frame_np * 255).astype(np.uint8)
+                    pil_frame = PILImage.fromarray(frame_np)
+                    
+                    # Collect masks from all augmentations
+                    mask_list = []
+                    
+                    # Process each augmentation
+                    for aug_fn, deaug_fn in self._tta_manager.pil_augmentations:
+                        # Apply augmentation to frame
+                        aug_frame = aug_fn(pil_frame)
+                        # Convert back to tensor
+                        aug_np = np.array(aug_frame).astype(np.float32) / 255.0
+                        aug_tensor = torch.from_numpy(aug_np).permute(2, 0, 1).unsqueeze(0).to(device)
+                        
+                        # Store original image
+                        original_image = inference_state["images"][frame_idx]
+                        # Temporarily replace with augmented image
+                        inference_state["images"][frame_idx] = aug_tensor.squeeze(0)
+                        
+                        # Run inference with augmented image
+                        aug_out, aug_pred_masks = self._run_single_frame_inference(
+                            inference_state=inference_state,
+                            output_dict=obj_output_dict,
+                            frame_idx=frame_idx,
+                            batch_size=1,  # run on the slice of a single object
+                            is_init_cond_frame=False,
+                            point_inputs=None,
+                            mask_inputs=None,
+                            reverse=reverse,
+                            run_mem_encoder=True,
+                        )
+                        
+                        # Convert to numpy for de-augmentation
+                        aug_mask_np = aug_pred_masks.squeeze(0).float().cpu().numpy()
+                        # De-augment mask
+                        deaug_mask = deaug_fn(aug_mask_np)
+                        mask_list.append(deaug_mask)
+                        
+                        # Restore original image
+                        inference_state["images"][frame_idx] = original_image
+                    
+                    # Aggregate masks using TTA manager
+                    aggregated_mask = self._tta_manager.aggregate_masks(mask_list, apply_threshold=False)
+                    # Convert back to tensor
+                    aggregated_tensor = torch.from_numpy(aggregated_mask).to(device).unsqueeze(0)
+                    
+                    # Use the aggregated mask for the final output
+                    current_out, pred_masks = self._run_single_frame_inference(
+                        inference_state=inference_state,
+                        output_dict=obj_output_dict,
+                        frame_idx=frame_idx,
+                        batch_size=1,  # run on the slice of a single object
+                        is_init_cond_frame=False,
+                        point_inputs=None,
+                        mask_inputs=None,
+                        reverse=reverse,
+                        run_mem_encoder=True,
+                        # Use the aggregated mask from TTA
+                        override_pred_masks=aggregated_tensor
+                    )
+                    obj_output_dict[storage_key][frame_idx] = current_out
+
+                inference_state["frames_tracked_per_obj"][obj_idx][frame_idx] = {
+                    "reverse": reverse
+                }
+                pred_masks_per_obj[obj_idx] = pred_masks
+
+            # Resize the output mask to the original video resolution (we directly use
+            # the mask scores on GPU for output to avoid any CPU conversion in between)
+            if len(pred_masks_per_obj) > 1:
+                all_pred_masks = torch.cat(pred_masks_per_obj, dim=0)
+            else:
+                all_pred_masks = pred_masks_per_obj[0]
+            _, video_res_masks = self._get_orig_video_res_output(
+                inference_state, all_pred_masks
+            )
+            yield frame_idx, obj_ids, video_res_masks
+    
+    @torch.inference_mode()
     def propagate_in_video(
         self,
         inference_state,
         start_frame_idx=None,
         max_frame_num_to_track=None,
         reverse=False,
-        use_tta=False,
     ):
         """Propagate the input points across frames to track in the entire video."""
         self.propagate_in_video_preflight(inference_state)
@@ -616,7 +767,6 @@ class SAM2VideoPredictor(SAM2Base):
                         mask_inputs=None,
                         reverse=reverse,
                         run_mem_encoder=True,
-                        use_tta=use_tta,
                     )
                     obj_output_dict[storage_key][frame_idx] = current_out
 
@@ -752,8 +902,8 @@ class SAM2VideoPredictor(SAM2Base):
         mask_inputs,
         reverse,
         run_mem_encoder,
-        use_tta=False,
         prev_sam_mask_logits=None,
+        override_pred_masks=None,
     ):
         """Run tracking on a single frame based on current inputs and previous memory."""
         # Retrieve correct image features
@@ -767,150 +917,51 @@ class SAM2VideoPredictor(SAM2Base):
 
         # point and mask should not appear as input simultaneously on the same frame
         assert point_inputs is None or mask_inputs is None
-        
-        if use_tta:
-            # Use autocast to reduce VRAM usage during TTA
-            with torch.amp.autocast('cuda', enabled=True):
-                # Initialize TTA manager
-                tta_mgr = TTAManager(threshold=0.5)
-                
-                # Store original frame and cache
-                raw_img = inference_state["images"][frame_idx]
-                storage_device = inference_state["storage_device"]
-                compute_device = inference_state["device"]
-                orig_img = raw_img.clone()
-                orig_cache = inference_state["cached_features"].get(frame_idx)
-                
-                # Collect masks from all augmentations
-                tta_masks = []
-                first_out = None
-                first_pred_gpu = None
-                
-                # Process each augmentation
-                for aug_idx, (aug_img_fn, mask_fn) in enumerate(tta_mgr.augmentations):
-                    # Apply augmentation to the frame
-                    aug_img = aug_img_fn(orig_img)
-                    inference_state["images"][frame_idx] = aug_img
-                    inference_state["cached_features"].pop(frame_idx, None)
-                    
-                    # Run inference on augmented frame (without TTA to avoid recursion)
-                    aug_out, aug_pred_gpu = self._run_single_frame_inference(
-                        inference_state=inference_state,
-                        output_dict=output_dict,
-                        frame_idx=frame_idx,
-                        batch_size=batch_size,
-                        is_init_cond_frame=is_init_cond_frame,
-                        point_inputs=point_inputs,
-                        mask_inputs=mask_inputs,
-                        reverse=reverse,
-                        run_mem_encoder=False,  # Skip memory encoding for augmentations
-                        use_tta=False,          # Prevent recursive TTA
-                        prev_sam_mask_logits=prev_sam_mask_logits,
-                    )
-                    
-                    # Store first augmentation's outputs as reference
-                    if aug_idx == 0:
-                        first_out = aug_out
-                        first_pred_gpu = aug_pred_gpu
-                    
-                    # Apply inverse transform to the mask
-                    deaug_mask = mask_fn(aug_pred_gpu)
-                    tta_masks.append(deaug_mask.detach().cpu().numpy())
-                
-                # Restore original frame and cache
-                inference_state["images"][frame_idx] = orig_img
-                if orig_cache is not None:
-                    inference_state["cached_features"][frame_idx] = orig_cache
-                
-                # Aggregate masks from all augmentations
-                agg = tta_mgr.aggregate_masks(tta_masks)
-                
-                # Convert aggregated mask to tensor with same properties as original prediction
-                agg_tensor = first_pred_gpu.clone()
-                
-                # Update the mask values while preserving tensor structure
-                if agg.ndim == 2 and agg_tensor.ndim > 2:
-                    # Handle dimension differences between aggregated mask and tensor
-                    h, w = agg_tensor.shape[-2:]
-                    
-                    # Resize if needed
-                    if agg.shape != (h, w):
-                        agg_resized = cv2.resize(agg, (w, h), interpolation=cv2.INTER_LINEAR)
-                    else:
-                        agg_resized = agg
-                    
-                    # Replace values in the correct tensor location
-                    agg_tensor_2d = torch.from_numpy(agg_resized).to(agg_tensor.device)
-                    if agg_tensor.ndim == 3:  # B, H, W
-                        agg_tensor[0] = agg_tensor_2d
-                    elif agg_tensor.ndim == 4:  # B, C, H, W
-                        agg_tensor[0, 0] = agg_tensor_2d
-                else:
-                    # Direct replacement if dimensions match
-                    agg_tensor = torch.from_numpy(agg).to(agg_tensor.device)
-                
-                # Create output dictionary based on first augmentation
-                current_out = dict(first_out)
-                current_out["pred_masks"] = agg_tensor
-                
-                # Only run memory encoder if explicitly requested
-                # This matches the behavior of the non-TTA branch
-                if run_mem_encoder:
-                    mem_feats, mem_pos = self._run_memory_encoder(
-                        inference_state=inference_state, 
-                        frame_idx=frame_idx, 
-                        batch_size=batch_size, 
-                        high_res_masks=agg_tensor, 
-                        object_score_logits=current_out["object_score_logits"], 
-                        is_mask_from_pts=False
-                    )
-                    current_out["maskmem_features"] = mem_feats
-                    current_out["maskmem_pos_enc"] = mem_pos
-                
-                return current_out, agg_tensor
-        else:
-            current_out = self.track_step(
-                frame_idx=frame_idx,
-                is_init_cond_frame=is_init_cond_frame,
-                current_vision_feats=current_vision_feats,
-                current_vision_pos_embeds=current_vision_pos_embeds,
-                feat_sizes=feat_sizes,
-                point_inputs=point_inputs,
-                mask_inputs=mask_inputs,
-                output_dict=output_dict,
-                num_frames=inference_state["num_frames"],
-                track_in_reverse=reverse,
-                run_mem_encoder=run_mem_encoder,
-                prev_sam_mask_logits=prev_sam_mask_logits,
-            )
+        current_out = self.track_step(
+            frame_idx=frame_idx,
+            is_init_cond_frame=is_init_cond_frame,
+            current_vision_feats=current_vision_feats,
+            current_vision_pos_embeds=current_vision_pos_embeds,
+            feat_sizes=feat_sizes,
+            point_inputs=point_inputs,
+            mask_inputs=mask_inputs,
+            output_dict=output_dict,
+            num_frames=inference_state["num_frames"],
+            track_in_reverse=reverse,
+            run_mem_encoder=run_mem_encoder,
+            prev_sam_mask_logits=prev_sam_mask_logits,
+        )
 
-            # optionally offload the output to CPU memory to save GPU space
-            storage_device = inference_state["storage_device"]
-            maskmem_features = current_out["maskmem_features"]
-            if maskmem_features is not None:
-                maskmem_features = maskmem_features.to(torch.bfloat16)
-                maskmem_features = maskmem_features.to(storage_device, non_blocking=True)
-            pred_masks_gpu = current_out["pred_masks"]
-            # potentially fill holes in the predicted masks
-            if self.fill_hole_area > 0:
-                pred_masks_gpu = fill_holes_in_mask_scores(
-                    pred_masks_gpu, self.fill_hole_area
-                )
-            pred_masks = pred_masks_gpu.to(storage_device, non_blocking=True)
-            # "maskmem_pos_enc" is the same across frames, so we only need to store one copy of it
-            maskmem_pos_enc = self._get_maskmem_pos_enc(inference_state, current_out)
-            # object pointer is a small tensor, so we always keep it on GPU memory for fast access
-            obj_ptr = current_out["obj_ptr"]
-            object_score_logits = current_out["object_score_logits"]
-            # make a compact version of this frame's output to reduce the state size
-            compact_current_out = {
-                "maskmem_features": maskmem_features,
-                "maskmem_pos_enc": maskmem_pos_enc,
-                "pred_masks": pred_masks,
-                "obj_ptr": obj_ptr,
-                "object_score_logits": object_score_logits,
-            }
-            return compact_current_out, pred_masks_gpu
+        # optionally offload the output to CPU memory to save GPU space
+        storage_device = inference_state["storage_device"]
+        maskmem_features = current_out["maskmem_features"]
+        if maskmem_features is not None:
+            maskmem_features = maskmem_features.to(torch.bfloat16)
+            maskmem_features = maskmem_features.to(storage_device, non_blocking=True)
+        pred_masks_gpu = current_out["pred_masks"]
+        # Use override_pred_masks if provided (used by TTA)
+        if override_pred_masks is not None:
+            pred_masks_gpu = override_pred_masks
+        # potentially fill holes in the predicted masks
+        elif self.fill_hole_area > 0:
+            pred_masks_gpu = fill_holes_in_mask_scores(
+                pred_masks_gpu, self.fill_hole_area
+            )
+        pred_masks = pred_masks_gpu.to(storage_device, non_blocking=True)
+        # "maskmem_pos_enc" is the same across frames, so we only need to store one copy of it
+        maskmem_pos_enc = self._get_maskmem_pos_enc(inference_state, current_out)
+        # object pointer is a small tensor, so we always keep it on GPU memory for fast access
+        obj_ptr = current_out["obj_ptr"]
+        object_score_logits = current_out["object_score_logits"]
+        # make a compact version of this frame's output to reduce the state size
+        compact_current_out = {
+            "maskmem_features": maskmem_features,
+            "maskmem_pos_enc": maskmem_pos_enc,
+            "pred_masks": pred_masks,
+            "obj_ptr": obj_ptr,
+            "object_score_logits": object_score_logits,
+        }
+        return compact_current_out, pred_masks_gpu
 
     def _run_memory_encoder(
         self,
@@ -930,35 +981,6 @@ class SAM2VideoPredictor(SAM2Base):
         _, _, current_vision_feats, _, feat_sizes = self._get_image_feature(
             inference_state, frame_idx, batch_size
         )
-        
-        # Check if high_res_masks has the incorrect dimensions (from TTA aggregation)
-        # The memory encoder expects dimensions to match current_vision_feats
-        # In TTA case, we might have dimension mismatch at dimension 3
-        if (high_res_masks.dim() >= 4 and current_vision_feats[-1].dim() >= 2 and 
-            high_res_masks.size(3) != 16 and current_vision_feats[-1].size(0) == 16):
-            # We need to reshape the high_res_masks to match expected dimensions
-            # Create a new tensor with correct dimensions, copying from high_res_masks
-            shaped_masks = torch.zeros(
-                high_res_masks.size(0),
-                high_res_masks.size(1),
-                high_res_masks.size(2),
-                16,  # Use the expected dimension size
-                device=high_res_masks.device,
-                dtype=high_res_masks.dtype
-            )
-            
-            # Copy values from smaller dimension to the correctly sized tensor
-            # We use the min of dimensions to avoid index errors
-            min_dim = min(high_res_masks.size(3), 16)
-            if high_res_masks.dim() == 4 and high_res_masks.size(1) == 1:
-                # Common case: B, 1, H, W format
-                shaped_masks[:, :, :, :min_dim] = high_res_masks[:, :, :, :min_dim]
-            else:
-                # Fallback for other formats - reshape as needed
-                shaped_masks = high_res_masks
-                
-            high_res_masks = shaped_masks
-            
         maskmem_features, maskmem_pos_enc = self._encode_new_memory(
             current_vision_feats=current_vision_feats,
             feat_sizes=feat_sizes,

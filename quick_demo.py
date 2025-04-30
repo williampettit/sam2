@@ -13,6 +13,7 @@ from PIL import Image
 from sam2.build_sam import build_sam2_hf
 from sam2.sam2_image_predictor import SAM2ImagePredictor
 from sam2.sam2_video_predictor import SAM2VideoPredictor
+from sam2.utils.tta import TTAManager  # Explicit import for clarity
 
 
 def overlay_masks_on_image(image, masks, alpha=0.5, colors=None):
@@ -127,7 +128,11 @@ def process_video(video_path, output_dir, use_tta=False):
         model_id="facebook/sam2-hiera-base-plus",
         device=device
     )
-    predictor = SAM2VideoPredictor.from_pretrained("facebook/sam2-hiera-base-plus")
+    # Initialize with mask_threshold for TTA consistency
+    predictor = SAM2VideoPredictor.from_pretrained(
+        "facebook/sam2-hiera-base-plus", 
+        mask_threshold=0.5  # Same threshold used by TTAManager by default
+    )
     
     # Generate output paths
     video_name = os.path.basename(video_path).split('.')[0]
@@ -155,12 +160,11 @@ def process_video(video_path, output_dir, use_tta=False):
         obj_id=1,
         points=point,
         labels=label,
-        use_tta=False
     )
     
     # Propagate through the video and ensure generator is consumed
     print("Propagating baseline masks through video...")
-    generator = predictor.propagate_in_video(inference_state, use_tta=False)
+    generator = predictor.propagate_in_video(inference_state)
     # Consume the generator to actually process all frames
     num_processed = 0
     for frame_idx, obj_ids, video_res_masks in generator:
@@ -188,12 +192,11 @@ def process_video(video_path, output_dir, use_tta=False):
             obj_id=1,
             points=point,
             labels=label,
-            use_tta=True
         )
         
         # Propagate through the video with TTA and ensure generator is consumed
         print("Propagating TTA masks through video...")
-        generator = predictor.propagate_in_video(inference_state, use_tta=True)
+        generator = predictor.propagate_in_video_with_tta(inference_state)
         # Consume the generator to actually process all frames
         num_processed = 0
         for frame_idx, obj_ids, video_res_masks in generator:
