@@ -55,14 +55,16 @@ class TTAManager:
                              For testing purposes, this can be set to False to return raw mean values.
             
         Returns:
-            If apply_threshold is True: Binary mask after applying mean aggregation and thresholding.
-            If apply_threshold is False: Raw mean mask values (float array).
+            Float array mask:
+            - If apply_threshold is True: Values are 1.0 where mask is above threshold, 0.0 elsewhere
+            - If apply_threshold is False: Raw mean mask values (float array).
         """
         # Stack masks along a new axis and calculate mean
         mean_mask = np.mean(np.stack(masks, axis=0), axis=0)
         
         # Apply threshold to get binary mask if requested
         if apply_threshold:
-            return mean_mask > self.threshold
+            # Convert boolean mask to float (1.0 and 0.0) to avoid issues with tensor operations
+            return (mean_mask > self.threshold).astype(np.float32)
         else:
             return mean_mask
