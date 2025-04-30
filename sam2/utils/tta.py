@@ -1,0 +1,59 @@
+"""
+Test-Time Augmentation manager for SAM2.
+"""
+from typing import List, Tuple, Callable
+import numpy as np
+import torch
+from PIL import ImageOps, ImageEnhance
+from sam2.utils.transforms import (
+    horizontal_flip_image,
+    horizontal_flip_mask,
+    vertical_flip_image,
+    vertical_flip_mask,
+    rotate_image,
+    rotate_mask,
+    adjust_brightness_contrast,
+)
+
+class TTAManager:
+    def __init__(self, threshold: float = 0.5):
+        self.threshold = threshold
+        # list of (image_fn, mask_fn)
+        self.augmentations: List[Tuple[Callable[[torch.Tensor], torch.Tensor], Callable[[torch.Tensor], torch.Tensor]]] = [
+            (lambda x: x, lambda m: m),  # original
+            (horizontal_flip_image, horizontal_flip_mask),
+            (vertical_flip_image, vertical_flip_mask),
+            (lambda x: rotate_image(x, 90), lambda m: rotate_mask(m, 90)),
+            (lambda x: rotate_image(x, -90), lambda m: rotate_mask(m, -90)),
+            (lambda x: adjust_brightness_contrast(x, 1.2, 1.2), lambda m: m),
+            (lambda x: adjust_brightness_contrast(x, 0.8, 0.8), lambda m: m),
+        ]
+        # PIL-based TTA ops for image predictor
+        self.pil_augmentations: List[Tuple[Callable, Callable]] = [
+            (lambda img: img, lambda m: m),  # original
+            (ImageOps.mirror, lambda m: np.flip(m, axis=-1)),  # horizontal flip
+            (ImageOps.flip, lambda m: np.flip(m, axis=-2)),    # vertical flip
+            (lambda img: img.rotate(90, expand=True), lambda m: np.rot90(m, k=3, axes=(1,2))),  # rotate 90
+            (lambda img: img.rotate(270, expand=True), lambda m: np.rot90(m, k=1, axes=(1,2))), # rotate 270
+            (lambda img: ImageEnhance.Brightness(img).enhance(1.2), lambda m: m),  # brightness up
+            (lambda img: ImageEnhance.Brightness(img).enhance(0.8), lambda m: m),  # brightness down
+            (lambda img: ImageEnhance.Contrast(img).enhance(1.2), lambda m: m),    # contrast up
+            (lambda img: ImageEnhance.Contrast(img).enhance(0.8), lambda m: m),    # contrast down
+        ]
+
+    def apply_augmentations(self, image: torch.Tensor) -> List[Tuple[torch.Tensor, Callable[[torch.Tensor], torch.Tensor]]]:
+        """
+        Apply each augmentation to the image.
+        Returns list of (augmented image, mask inverse function).
+        """
+        results = []
+        for img_fn, mask_fn in self.augmentations:
+            aug_img = img_fn(image)
+            results.append((aug_img, mask_fn))
+        return results
+
+    def aggregate_masks(self, masks: List[np.ndarray]) -> np.ndarray:
+        """
+        Aggregate a list of mask arrays via pixel-wise mean.
+        """
+        return np.mean(np.stack(masks, axis=0), axis=0)
