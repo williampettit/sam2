@@ -17,14 +17,34 @@ from sam2.utils.tta import TTAManager  # Explicit import for clarity
 
 
 def overlay_masks_on_image(image, masks, alpha=0.5, colors=None):
-    """Overlay masks on an image with different colors."""
+    """Overlay masks on an image with different colors.
+    
+    Args:
+        image: Input image (HxWx3 numpy array)
+        masks: List of masks or single mask (HxW numpy array)
+        alpha: Transparency of the mask overlay (0-1)
+        colors: List of RGB tuples for mask colors
+        
+    Returns:
+        Image with masks overlaid
+    """
     # Ensure masks is a batch
     if len(np.array(masks).shape) == 2:
         masks = [masks]
     
     if colors is None:
-        colors = [(255, 0, 0), (0, 255, 0), (0, 0, 255),
-                   (255, 255, 0), (255, 0, 255), (0, 255, 255)]
+        colors = [
+            (255, 0, 0),    # Red
+            (0, 255, 0),    # Green
+            (0, 0, 255),    # Blue
+            (255, 255, 0),  # Yellow
+            (255, 0, 255),  # Magenta
+            (0, 255, 255),  # Cyan
+            (128, 0, 0),    # Dark red
+            (0, 128, 0),    # Dark green
+            (0, 0, 128),    # Dark blue
+            (128, 128, 0),  # Olive
+        ]
     
     overlay = image.copy()
     h, w = image.shape[:2]
@@ -40,11 +60,27 @@ def overlay_masks_on_image(image, masks, alpha=0.5, colors=None):
                 binary_mask = mask > 127
         else:
             binary_mask = mask
+        
+        # Ensure mask has correct dimensions
+        if binary_mask.shape[:2] != (h, w):
+            binary_mask = cv2.resize(
+                binary_mask.astype(np.uint8), 
+                (w, h), 
+                interpolation=cv2.INTER_NEAREST
+            )
+            binary_mask = binary_mask > 0
             
         color = colors[i % len(colors)]
         colored_mask = np.zeros((h, w, 3), dtype=np.uint8)
         colored_mask[binary_mask] = color
         overlay = cv2.addWeighted(overlay, 1, colored_mask, alpha, 0)
+        
+        # Add a small label with mask index
+        cv2.putText(
+            overlay, f"Mask {i+1}", 
+            (10, 30 + 30 * i), 
+            cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2
+        )
     
     return overlay
 
@@ -124,14 +160,13 @@ def process_video(video_path, output_dir, use_tta=False):
     
     # Initialize the model
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    sam2_model = build_sam2_hf(
-        model_id="facebook/sam2-hiera-base-plus",
-        device=device
-    )
+    print(f"Using device: {device}")
+    
     # Initialize with mask_threshold for TTA consistency
     predictor = SAM2VideoPredictor.from_pretrained(
         "facebook/sam2-hiera-base-plus", 
-        mask_threshold=0.5  # Same threshold used by TTAManager by default
+        mask_threshold=0.5,  # Same threshold used by TTAManager by default
+        non_overlap_masks=True  # Enable non-overlapping constraints for better results
     )
     
     # Generate output paths
@@ -139,6 +174,28 @@ def process_video(video_path, output_dir, use_tta=False):
     baseline_output_path = os.path.join(output_dir, f"{video_name}_baseline.mp4")
     tta_output_path = os.path.join(output_dir, f"{video_name}_tta.mp4")
     
+    # Process baseline (no TTA)
+    print("\n=== Processing baseline (no TTA) ===")
+    process_result = process_single_video(predictor, video_path, baseline_output_path, use_tta=False)
+    print(f"Saved baseline video to: {baseline_output_path}")
+    
+    # Process with TTA if requested
+    if use_tta:
+        print("\n=== Processing with TTA ===")
+        process_result = process_single_video(predictor, video_path, tta_output_path, use_tta=True)
+        print(f"Saved TTA video to: {tta_output_path}")
+        
+        # Create side-by-side comparison
+        create_side_by_side_video(
+            baseline_output_path,
+            tta_output_path,
+            os.path.join(output_dir, f"{video_name}_comparison.mp4")
+        )
+        print(f"Saved side-by-side comparison to: {os.path.join(output_dir, f'{video_name}_comparison.mp4')}")
+
+
+def process_single_video(predictor, video_path, output_path, use_tta=False):
+    """Process a single video with or without TTA and save the results."""
     # Initialize inference state
     inference_state = predictor.init_state(
         video_path=video_path,
@@ -153,8 +210,8 @@ def process_video(video_path, output_dir, use_tta=False):
     
     print(f"Adding point at {point} with label {label} to frame 0")
     
-    # Process with baseline
-    predictor.add_new_points_or_box(
+    # Add point to first frame
+    frame_idx, obj_ids, mask_logits = predictor.add_new_points_or_box(
         inference_state,
         frame_idx=0,
         obj_id=1,
@@ -162,151 +219,141 @@ def process_video(video_path, output_dir, use_tta=False):
         labels=label,
     )
     
-    # Propagate through the video and ensure generator is consumed
-    print("Propagating baseline masks through video...")
-    generator = predictor.propagate_in_video(inference_state)
-    # Consume the generator to actually process all frames
+    # Store segmentation results for all frames
+    video_segments = {}
+    
+    # Propagate through the video
+    if use_tta:
+        print("Propagating masks through video with TTA...")
+        generator = predictor.propagate_in_video_with_tta(inference_state)
+    else:
+        print("Propagating masks through video...")
+        generator = predictor.propagate_in_video(inference_state)
+    
+    # Process all frames and store results
     num_processed = 0
-    for frame_idx, obj_ids, video_res_masks in generator:
+    for frame_idx, obj_ids, mask_logits in generator:
+        # Store binary masks for each object
+        video_segments[frame_idx] = {
+            obj_id: (mask_logits[i] > predictor.mask_threshold).cpu().numpy()
+            for i, obj_id in enumerate(obj_ids)
+        }
+        
         num_processed += 1
         if num_processed % 10 == 0:
             print(f"  Processed frame {frame_idx} with {len(obj_ids)} objects")
-    print(f"Baseline: Processed {num_processed} frames")
     
-    # Save baseline video
-    save_video_with_masks(video_path, inference_state, baseline_output_path, obj_id=1)
-    print(f"Saved baseline video to: {baseline_output_path}")
+    print(f"Processed {num_processed} frames")
     
-    if use_tta:
-        # Reset state for TTA processing
-        inference_state = predictor.init_state(
-            video_path=video_path,
-            offload_video_to_cpu=True
-        )
-        
-        # Process with TTA
-        print(f"Adding point with TTA at {point} with label {label} to frame 0")
-        predictor.add_new_points_or_box(
-            inference_state,
-            frame_idx=0,
-            obj_id=1,
-            points=point,
-            labels=label,
-        )
-        
-        # Propagate through the video with TTA and ensure generator is consumed
-        print("Propagating TTA masks through video...")
-        generator = predictor.propagate_in_video_with_tta(inference_state)
-        # Consume the generator to actually process all frames
-        num_processed = 0
-        for frame_idx, obj_ids, video_res_masks in generator:
-            num_processed += 1
-            if num_processed % 10 == 0:
-                print(f"  Processed frame {frame_idx} with {len(obj_ids)} objects")
-        print(f"TTA: Processed {num_processed} frames")
-        
-        # Save TTA video
-        save_video_with_masks(video_path, inference_state, tta_output_path, obj_id=1)
-        print(f"Saved TTA video to: {tta_output_path}")
-        
-        # Create side-by-side comparison
-        create_side_by_side_video(
-            baseline_output_path,
-            tta_output_path,
-            os.path.join(output_dir, f"{video_name}_comparison.mp4")
-        )
-        print(f"Saved side-by-side comparison to: {os.path.join(output_dir, f'{video_name}_comparison.mp4')}")
+    # Save video with masks
+    save_video_with_masks(video_path, video_segments, output_path)
+    
+    return video_segments
 
 
-def save_video_with_masks(video_path, inference_state, output_path, obj_id=1):
-    """Save a video with masks overlaid."""
+def save_video_with_masks(video_path, video_segments, output_path):
+    """Save a video with masks overlaid.
+    
+    Args:
+        video_path: Path to the input video
+        video_segments: Dictionary mapping frame_idx -> {obj_id -> binary_mask}
+        output_path: Path to save the output video with masks
+    """
+    # Open the video
     cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        raise ValueError(f"Could not open video: {video_path}")
+    
+    # Get video properties
     frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     fps = cap.get(cv2.CAP_PROP_FPS)
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     
+    # Set up video writer
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
     out = cv2.VideoWriter(output_path, fourcc, fps, (frame_width, frame_height))
     
+    # Define colors for different objects (using tab10 colormap)
+    colors = [
+        (255, 0, 0),    # Red
+        (0, 255, 0),    # Green
+        (0, 0, 255),    # Blue
+        (255, 255, 0),  # Yellow
+        (255, 0, 255),  # Magenta
+        (0, 255, 255),  # Cyan
+        (128, 0, 0),    # Dark red
+        (0, 128, 0),    # Dark green
+        (0, 0, 128),    # Dark blue
+        (128, 128, 0),  # Olive
+    ]
+    
+    print(f"Processing video with {total_frames} frames, {len(video_segments)} frames have masks")
+    
+    # Process each frame
     frame_idx = 0
-    obj_idx = inference_state["obj_id_to_idx"][obj_id]
-    mask_found = False
-    
-    print(f"Processing video with {inference_state['num_frames']} frames")
-    print(f"Object ID: {obj_id}, Object index: {obj_idx}")
-    
     while cap.isOpened():
         ret, frame = cap.read()
         if not ret:
             break
         
-        # Get the mask for this frame
-        output_dict = inference_state["output_dict_per_obj"][obj_idx]
-        mask = None
-        source = None
+        # Check if we have masks for this frame
+        if frame_idx in video_segments:
+            # Get masks for all objects in this frame
+            frame_masks = video_segments[frame_idx]
+            
+            # Create a mask overlay for each object
+            for obj_id, binary_mask in frame_masks.items():
+                # Get color for this object
+                color_idx = (obj_id % len(colors))
+                color = colors[color_idx]
+                
+                # Ensure mask has correct dimensions
+                if binary_mask.shape != (frame_height, frame_width):
+                    binary_mask = cv2.resize(
+                        binary_mask.astype(np.uint8), 
+                        (frame_width, frame_height), 
+                        interpolation=cv2.INTER_NEAREST
+                    )
+                
+                # Create colored mask overlay
+                mask_overlay = np.zeros_like(frame)
+                mask_overlay[binary_mask > 0] = color
+                
+                # Overlay mask on frame
+                alpha = 0.5
+                frame = cv2.addWeighted(frame, 1.0, mask_overlay, alpha, 0)
+                
+                # Add a small label with object ID
+                cv2.putText(
+                    frame, f"ID: {obj_id}", 
+                    (10, 30 + 30 * color_idx), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2
+                )
         
-        # Check in both cond_frame_outputs and non_cond_frame_outputs
-        if frame_idx in output_dict["cond_frame_outputs"]:
-            mask = output_dict["cond_frame_outputs"][frame_idx]["pred_masks"]
-            source = "cond"
-        elif frame_idx in output_dict["non_cond_frame_outputs"]:
-            mask = output_dict["non_cond_frame_outputs"][frame_idx]["pred_masks"]
-            source = "non_cond"
-        
-        if mask is not None:
-            mask_found = True
-            # Print mask stats occasionally for debugging
-            if frame_idx % 10 == 0:
-                print(f"Frame {frame_idx}: Found mask from {source} (shape={mask.shape}, min={mask.min().item():.2f}, max={mask.max().item():.2f})")
-            
-            # Convert mask to binary format - try multiple approaches depending on the mask type
-            mask_np = mask.cpu().squeeze().numpy()
-            
-            # Try multiple threshold approaches based on the data
-            if mask_np.max() > 1.0:
-                # Logits format - apply sigmoid first
-                mask_np = 1 / (1 + np.exp(-mask_np))  # sigmoid
-                binary_mask = (mask_np > 0.5).astype(np.uint8)
-            elif mask_np.max() <= 1.0 and mask_np.min() >= 0.0:
-                # Already in probability format
-                binary_mask = (mask_np > 0.5).astype(np.uint8)
-            else:
-                # Fallback - try direct thresholding
-                binary_mask = (mask_np > 0).astype(np.uint8)
-            
-            # Check if we have any positive pixels
-            if binary_mask.sum() > 0:
-                print(f"Frame {frame_idx}: Mask contains {binary_mask.sum()} positive pixels")
-            
-            # Resize the mask to match the frame size
-            if binary_mask.shape != (frame_height, frame_width):
-                binary_mask = cv2.resize(binary_mask, (frame_width, frame_height), interpolation=cv2.INTER_NEAREST)
-            
-            # Create a colored mask overlay
-            mask_overlay = np.zeros_like(frame)
-            mask_overlay[binary_mask == 1] = [0, 0, 255]  # Red color for the mask
-            
-            # Add the mask overlay to the frame
-            alpha = 0.5
-            frame = cv2.addWeighted(frame, 1, mask_overlay, alpha, 0)
-        
+        # Write frame to output video
         out.write(frame)
         frame_idx += 1
+        
+        # Print progress
+        if frame_idx % 20 == 0:
+            print(f"  Processed {frame_idx}/{total_frames} frames")
     
-    if not mask_found:
-        print("WARNING: No masks were found in any frame! Debugging info:")
-        print(f"  cond_frame_outputs keys: {list(output_dict['cond_frame_outputs'].keys())}")
-        print(f"  non_cond_frame_outputs keys: {list(output_dict['non_cond_frame_outputs'].keys())}")
-    else:
-        print(f"Successfully processed video with masks")
-    
+    # Release resources
     cap.release()
     out.release()
+    print(f"Saved video with masks to: {output_path}")
 
 
 def create_side_by_side_video(video1, video2, output_path):
     """Create side-by-side comparison video using ffmpeg."""
-    os.system(f"ffmpeg -i {video1} -i {video2} -filter_complex \"[0:v][1:v]hstack=inputs=2\" {output_path} -y")
+    print(f"Creating side-by-side comparison of {video1} and {video2}...")
+    # Use -loglevel error to reduce ffmpeg output verbosity
+    os.system(f"ffmpeg -loglevel error -i {video1} -i {video2} -filter_complex \"[0:v][1:v]hstack=inputs=2\" {output_path} -y")
+    if os.path.exists(output_path):
+        print(f"Successfully created comparison video: {output_path}")
+    else:
+        print(f"Failed to create comparison video: {output_path}")
 
 
 def main():
