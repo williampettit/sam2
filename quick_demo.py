@@ -310,11 +310,23 @@ def save_video_with_masks(video_path, video_segments, output_path):
                 
                 # Ensure mask has correct dimensions
                 if binary_mask.shape != (frame_height, frame_width):
-                    binary_mask = cv2.resize(
-                        binary_mask.astype(np.uint8), 
-                        (frame_width, frame_height), 
-                        interpolation=cv2.INTER_NEAREST
-                    )
+                    try:
+                        # Check if dimensions are valid
+                        if binary_mask.size > 0 and frame_width > 0 and frame_height > 0:
+                            binary_mask = cv2.resize(
+                                binary_mask.astype(np.uint8), 
+                                (frame_width, frame_height), 
+                                interpolation=cv2.INTER_NEAREST
+                            )
+                        else:
+                            print(f"Warning: Invalid dimensions for resize: mask shape={binary_mask.shape}, target=({frame_height}, {frame_width})")
+                            # Create an empty mask with correct dimensions
+                            binary_mask = np.zeros((frame_height, frame_width), dtype=np.uint8)
+                    except Exception as e:
+                        print(f"Error resizing mask: {e}")
+                        print(f"Mask shape: {binary_mask.shape}, Target: ({frame_height}, {frame_width})")
+                        # Create an empty mask with correct dimensions
+                        binary_mask = np.zeros((frame_height, frame_width), dtype=np.uint8)
                 
                 # Create colored mask overlay
                 mask_overlay = np.zeros_like(frame)
