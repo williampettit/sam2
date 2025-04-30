@@ -14,7 +14,8 @@ from tqdm import tqdm
 
 from sam2.modeling.sam2_base import NO_OBJ_SCORE, SAM2Base
 from sam2.utils.misc import concat_points, fill_holes_in_mask_scores, load_video_frames
-
+import numpy as np
+from sam2.utils.tta import TTAManager
 
 class SAM2VideoPredictor(SAM2Base):
     """The predictor class to handle user interactions and manage inference states."""
@@ -168,6 +169,7 @@ class SAM2VideoPredictor(SAM2Base):
         clear_old_points=True,
         normalize_coords=True,
         box=None,
+        use_tta=False,
     ):
         """Add new points to a frame."""
         obj_idx = self._obj_id_to_idx(inference_state, obj_id)
@@ -275,6 +277,7 @@ class SAM2VideoPredictor(SAM2Base):
             # them into memory.
             run_mem_encoder=False,
             prev_sam_mask_logits=prev_sam_mask_logits,
+            use_tta=use_tta,
         )
         # Add the output to the output dict (to be used as future memory)
         obj_temp_output_dict[storage_key][frame_idx] = current_out
@@ -549,6 +552,7 @@ class SAM2VideoPredictor(SAM2Base):
         start_frame_idx=None,
         max_frame_num_to_track=None,
         reverse=False,
+        use_tta=False,
     ):
         """Propagate the input points across frames to track in the entire video."""
         self.propagate_in_video_preflight(inference_state)
@@ -610,6 +614,7 @@ class SAM2VideoPredictor(SAM2Base):
                         mask_inputs=None,
                         reverse=reverse,
                         run_mem_encoder=True,
+                        use_tta=use_tta,
                     )
                     obj_output_dict[storage_key][frame_idx] = current_out
 
@@ -745,6 +750,7 @@ class SAM2VideoPredictor(SAM2Base):
         mask_inputs,
         reverse,
         run_mem_encoder,
+        use_tta=False,
         prev_sam_mask_logits=None,
     ):
         """Run tracking on a single frame based on current inputs and previous memory."""
@@ -759,48 +765,97 @@ class SAM2VideoPredictor(SAM2Base):
 
         # point and mask should not appear as input simultaneously on the same frame
         assert point_inputs is None or mask_inputs is None
-        current_out = self.track_step(
-            frame_idx=frame_idx,
-            is_init_cond_frame=is_init_cond_frame,
-            current_vision_feats=current_vision_feats,
-            current_vision_pos_embeds=current_vision_pos_embeds,
-            feat_sizes=feat_sizes,
-            point_inputs=point_inputs,
-            mask_inputs=mask_inputs,
-            output_dict=output_dict,
-            num_frames=inference_state["num_frames"],
-            track_in_reverse=reverse,
-            run_mem_encoder=run_mem_encoder,
-            prev_sam_mask_logits=prev_sam_mask_logits,
-        )
-
-        # optionally offload the output to CPU memory to save GPU space
-        storage_device = inference_state["storage_device"]
-        maskmem_features = current_out["maskmem_features"]
-        if maskmem_features is not None:
-            maskmem_features = maskmem_features.to(torch.bfloat16)
-            maskmem_features = maskmem_features.to(storage_device, non_blocking=True)
-        pred_masks_gpu = current_out["pred_masks"]
-        # potentially fill holes in the predicted masks
-        if self.fill_hole_area > 0:
-            pred_masks_gpu = fill_holes_in_mask_scores(
-                pred_masks_gpu, self.fill_hole_area
+        if use_tta:
+            tta_mgr = TTAManager()
+            raw_img = inference_state["images"][frame_idx]
+            storage_device = inference_state["storage_device"]
+            orig_img = raw_img.clone()
+            orig_cache = inference_state["cached_features"].get(frame_idx)
+            inference_state["cached_features"].pop(frame_idx, None)
+            tta_masks = []
+            first_obj_ptr = None
+            first_score_logits = None
+            for aug_img_fn, mask_fn in tta_mgr.augmentations:
+                aug_img = aug_img_fn(orig_img)
+                inference_state["images"][frame_idx] = aug_img
+                inference_state["cached_features"].pop(frame_idx, None)
+                out, pred_gpu = self._run_single_frame_inference(
+                    inference_state=inference_state,
+                    output_dict=output_dict,
+                    frame_idx=frame_idx,
+                    batch_size=batch_size,
+                    is_init_cond_frame=is_init_cond_frame,
+                    point_inputs=point_inputs,
+                    mask_inputs=mask_inputs,
+                    reverse=reverse,
+                    run_mem_encoder=False,
+                    use_tta=False,
+                    prev_sam_mask_logits=prev_sam_mask_logits,
+                )
+                if first_obj_ptr is None:
+                    first_obj_ptr = out["obj_ptr"]
+                    first_score_logits = out["object_score_logits"]
+                deaug = mask_fn(pred_gpu)
+                tta_masks.append(deaug.detach().cpu().numpy())
+            inference_state["images"][frame_idx] = orig_img
+            if orig_cache is not None:
+                inference_state["cached_features"][frame_idx] = orig_cache
+            agg = tta_mgr.aggregate_masks(tta_masks)
+            agg_tensor = torch.from_numpy(agg).to(storage_device)
+            mem_feats, mem_pos = self._run_memory_encoder(
+                inference_state, frame_idx, batch_size, agg_tensor, first_score_logits, False
             )
-        pred_masks = pred_masks_gpu.to(storage_device, non_blocking=True)
-        # "maskmem_pos_enc" is the same across frames, so we only need to store one copy of it
-        maskmem_pos_enc = self._get_maskmem_pos_enc(inference_state, current_out)
-        # object pointer is a small tensor, so we always keep it on GPU memory for fast access
-        obj_ptr = current_out["obj_ptr"]
-        object_score_logits = current_out["object_score_logits"]
-        # make a compact version of this frame's output to reduce the state size
-        compact_current_out = {
-            "maskmem_features": maskmem_features,
-            "maskmem_pos_enc": maskmem_pos_enc,
-            "pred_masks": pred_masks,
-            "obj_ptr": obj_ptr,
-            "object_score_logits": object_score_logits,
-        }
-        return compact_current_out, pred_masks_gpu
+            current_out = {
+                "maskmem_features": mem_feats,
+                "maskmem_pos_enc": mem_pos,
+                "pred_masks": agg_tensor,
+                "obj_ptr": first_obj_ptr,
+                "object_score_logits": first_score_logits,
+            }
+            return current_out, agg_tensor
+        else:
+            current_out = self.track_step(
+                frame_idx=frame_idx,
+                is_init_cond_frame=is_init_cond_frame,
+                current_vision_feats=current_vision_feats,
+                current_vision_pos_embeds=current_vision_pos_embeds,
+                feat_sizes=feat_sizes,
+                point_inputs=point_inputs,
+                mask_inputs=mask_inputs,
+                output_dict=output_dict,
+                num_frames=inference_state["num_frames"],
+                track_in_reverse=reverse,
+                run_mem_encoder=run_mem_encoder,
+                prev_sam_mask_logits=prev_sam_mask_logits,
+            )
+
+            # optionally offload the output to CPU memory to save GPU space
+            storage_device = inference_state["storage_device"]
+            maskmem_features = current_out["maskmem_features"]
+            if maskmem_features is not None:
+                maskmem_features = maskmem_features.to(torch.bfloat16)
+                maskmem_features = maskmem_features.to(storage_device, non_blocking=True)
+            pred_masks_gpu = current_out["pred_masks"]
+            # potentially fill holes in the predicted masks
+            if self.fill_hole_area > 0:
+                pred_masks_gpu = fill_holes_in_mask_scores(
+                    pred_masks_gpu, self.fill_hole_area
+                )
+            pred_masks = pred_masks_gpu.to(storage_device, non_blocking=True)
+            # "maskmem_pos_enc" is the same across frames, so we only need to store one copy of it
+            maskmem_pos_enc = self._get_maskmem_pos_enc(inference_state, current_out)
+            # object pointer is a small tensor, so we always keep it on GPU memory for fast access
+            obj_ptr = current_out["obj_ptr"]
+            object_score_logits = current_out["object_score_logits"]
+            # make a compact version of this frame's output to reduce the state size
+            compact_current_out = {
+                "maskmem_features": maskmem_features,
+                "maskmem_pos_enc": maskmem_pos_enc,
+                "pred_masks": pred_masks,
+                "obj_ptr": obj_ptr,
+                "object_score_logits": object_score_logits,
+            }
+            return compact_current_out, pred_masks_gpu
 
     def _run_memory_encoder(
         self,
