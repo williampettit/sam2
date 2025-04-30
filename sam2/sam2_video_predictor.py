@@ -812,21 +812,44 @@ class SAM2VideoPredictor(SAM2Base):
                 if orig_cache is not None:
                     inference_state["cached_features"][frame_idx] = orig_cache
                 
+                # Instead of trying to fix dimensions after aggregation, let's use the first prediction's
+                # architecture and just replace the mask data
+                
+                # Get the first prediction to use as a template
+                template_out = out
+                template_pred = pred_gpu
+                
                 # Aggregate masks from all augmentations
                 agg = tta_mgr.aggregate_masks(tta_masks)
-                agg_tensor = torch.from_numpy(agg).to(storage_device)
                 
-                # Ensure the aggregated mask has the same shape as pred_gpu
-                # Get reference shape from one of the outputs
-                ref_shape = pred_gpu.shape
-                if agg_tensor.shape != ref_shape:
-                    # Resize if needed to match expected dimensions
-                    agg_tensor = torch.nn.functional.interpolate(
-                        agg_tensor.unsqueeze(0),  # Add batch dimension for interpolate
-                        size=(ref_shape[-2], ref_shape[-1]),
-                        mode='bilinear',
-                        align_corners=False
-                    ).squeeze(0)  # Remove batch dimension
+                # Create a new tensor with the exact same shape as the template
+                # but with the aggregated mask values
+                if template_pred is not None:
+                    # Create a copy of the template prediction
+                    agg_tensor = template_pred.clone()
+                    
+                    # Replace the mask values with the aggregated values
+                    # Handle different dimensionality cases
+                    if agg.ndim == 2 and template_pred.ndim > 2:  # Simple 2D mask vs multi-dim tensor
+                        # For each spatial location, replace the mask value
+                        h, w = template_pred.shape[-2:]
+                        # Resize the aggregated mask if needed
+                        if agg.shape != (h, w):
+                            agg_resized = cv2.resize(agg, (w, h), interpolation=cv2.INTER_LINEAR)
+                        else:
+                            agg_resized = agg
+                            
+                        # Convert to tensor
+                        agg_tensor_2d = torch.from_numpy(agg_resized).to(template_pred.device)
+                        
+                        # Replace values while preserving the tensor structure
+                        if template_pred.ndim == 3:  # B, H, W
+                            agg_tensor[0] = agg_tensor_2d
+                        elif template_pred.ndim == 4:  # B, C, H, W
+                            agg_tensor[0, 0] = agg_tensor_2d
+                    else:
+                        # Direct replacement if dimensions match
+                        agg_tensor = torch.from_numpy(agg).to(template_pred.device)
                 
                 # Run memory encoder on the aggregated mask
                 mem_feats, mem_pos = self._run_memory_encoder(
