@@ -124,6 +124,7 @@ def vos_inference(
     score_thresh=0.0,
     use_all_masks=False,
     per_obj_png_file=False,
+    use_tta=False,
 ):
     """Run VOS inference on a single video with the given predictor."""
     # load the video frames and initialize the inference state on this video
@@ -222,7 +223,8 @@ def vos_inference(
     output_palette = input_palette or DAVIS_PALETTE
     video_segments = {}  # video_segments contains the per-frame segmentation results
     for out_frame_idx, out_obj_ids, out_mask_logits in predictor.propagate_in_video(
-        inference_state
+        inference_state,
+        use_tta=use_tta
     ):
         per_obj_output_mask = {
             out_obj_id: (out_mask_logits[i] > score_thresh).cpu().numpy()
@@ -255,6 +257,7 @@ def vos_separate_inference_per_object(
     score_thresh=0.0,
     use_all_masks=False,
     per_obj_png_file=False,
+    use_tta=False,
 ):
     """
     Run VOS inference on a single video with the given predictor.
@@ -322,6 +325,7 @@ def vos_separate_inference_per_object(
             inference_state,
             start_frame_idx=min(input_frame_inds),
             reverse=False,
+            use_tta=use_tta,
         ):
             obj_scores = out_mask_logits.cpu().numpy()
             output_scores_per_object[object_id][out_frame_idx] = obj_scores
@@ -439,6 +443,11 @@ def main():
         action="store_true",
         help="whether to use vos optimized video predictor with all modules compiled",
     )
+    parser.add_argument(
+        "--use_tta",
+        action="store_true",
+        help="whether to use test-time augmentation (TTA) during inference for improved mask quality",
+    )
     args = parser.parse_args()
 
     # if we use per-object PNG files, they could possibly overlap in inputs and outputs
@@ -484,6 +493,7 @@ def main():
                 score_thresh=args.score_thresh,
                 use_all_masks=args.use_all_masks,
                 per_obj_png_file=args.per_obj_png_file,
+                use_tta=args.use_tta,
             )
         else:
             vos_separate_inference_per_object(
@@ -495,6 +505,7 @@ def main():
                 score_thresh=args.score_thresh,
                 use_all_masks=args.use_all_masks,
                 per_obj_png_file=args.per_obj_png_file,
+                use_tta=args.use_tta,
             )
 
     print(
