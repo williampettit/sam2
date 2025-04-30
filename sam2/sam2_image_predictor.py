@@ -50,7 +50,7 @@ class SAM2ImagePredictor:
             max_sprinkle_area=max_sprinkle_area,
         )
         # Initialize TTA manager for test-time augmentations
-        self._tta_manager = TTAManager(threshold=self.mask_threshold)
+        self._tta_manager = TTAManager(threshold=mask_threshold)
 
         # Predictor state
         self._is_image_set = False
