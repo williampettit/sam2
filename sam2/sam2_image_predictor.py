@@ -351,7 +351,7 @@ class SAM2ImagePredictor:
         mask_list = []
         
         # Use autocast to reduce VRAM usage
-        with torch.cuda.amp.autocast(enabled=True):
+        with torch.amp.autocast('cuda', enabled=True):
             for aug_fn, deaug_fn in tta_transforms:
                 aug_img = aug_fn(pil_image)
                 self.set_image(aug_img)
