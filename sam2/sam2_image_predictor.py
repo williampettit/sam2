@@ -369,7 +369,7 @@ class SAM2ImagePredictor:
                 mask_list.append(deaug_mask)
 
         # Use TTAManager for aggregation and thresholding
-        return self._tta_manager.aggregate_masks(mask_list)
+        return self._tta_manager.aggregate_masks(mask_list, apply_threshold=False)
 
     def _prep_prompts(
         self, point_coords, point_labels, box, mask_logits, normalize_coords, img_idx=-1
