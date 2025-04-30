@@ -11,10 +11,12 @@ from typing import List, Optional, Tuple, Union
 import numpy as np
 import torch
 from PIL.Image import Image
+from PIL import ImageOps, ImageEnhance
 
 from sam2.modeling.sam2_base import SAM2Base
 
 from sam2.utils.transforms import SAM2Transforms
+from sam2.utils.tta import TTAManager  # TTA manager
 
 
 class SAM2ImagePredictor:
@@ -47,6 +49,8 @@ class SAM2ImagePredictor:
             max_hole_area=max_hole_area,
             max_sprinkle_area=max_sprinkle_area,
         )
+        # Initialize TTA manager for test-time augmentations
+        self._tta_manager = TTAManager(threshold=self.mask_threshold)
 
         # Predictor state
         self._is_image_set = False
@@ -301,6 +305,54 @@ class SAM2ImagePredictor:
         iou_predictions_np = iou_predictions.squeeze(0).float().detach().cpu().numpy()
         low_res_masks_np = low_res_masks.squeeze(0).float().detach().cpu().numpy()
         return masks_np, iou_predictions_np, low_res_masks_np
+
+    def predict_with_tta(
+        self,
+        image: Union[np.ndarray, Image],
+        point_coords: Optional[np.ndarray] = None,
+        point_labels: Optional[np.ndarray] = None,
+        box: Optional[np.ndarray] = None,
+        mask_input: Optional[np.ndarray] = None,
+        multimask_output: bool = True,
+        return_logits: bool = False,
+        normalize_coords=True,
+    ) -> np.ndarray:
+        """
+        TTA-enabled prediction: apply augmentations, de-augment, aggregate, and threshold masks.
+        """
+        # Convert to PIL Image
+        from PIL import Image as PILImage
+        if isinstance(image, np.ndarray):
+            pil_image = PILImage.fromarray(image.astype(np.uint8))
+        else:
+            pil_image = image
+
+        # Use TTAManager's PIL-based augmentation pipeline
+        tta_transforms = self._tta_manager.pil_augmentations
+
+        # Collect de-augmented masks
+        mask_list = []
+        for aug_fn, deaug_fn in tta_transforms:
+            aug_img = aug_fn(pil_image)
+            self.set_image(aug_img)
+            masks, *_ = self.predict(
+                point_coords,
+                point_labels,
+                box,
+                mask_input,
+                multimask_output,
+                return_logits,
+                normalize_coords,
+            )
+            # de-augment mask array
+            deaug_mask = deaug_fn(masks)
+            mask_list.append(deaug_mask)
+
+        # Aggregate and threshold
+        stacked = np.stack(mask_list, axis=0)  # N x C x H x W
+        mean_mask = np.mean(stacked, axis=0)   # C x H x W
+        final_mask = mean_mask > self.mask_threshold
+        return final_mask
 
     def _prep_prompts(
         self, point_coords, point_labels, box, mask_logits, normalize_coords, img_idx=-1
