@@ -8,6 +8,7 @@ import argparse
 import torch
 import numpy as np
 import cv2
+import matplotlib.pyplot as plt
 from PIL import Image
 
 from sam2.build_sam import build_sam2_hf
@@ -16,71 +17,64 @@ from sam2.sam2_video_predictor import SAM2VideoPredictor
 from sam2.utils.tta import TTAManager  # Explicit import for clarity
 
 
-def overlay_masks_on_image(image, masks, alpha=0.5, colors=None):
-    """Overlay masks on an image with different colors.
+def overlay_masks_on_image(image, masks, obj_ids=None, alpha=0.5):
+    """Overlay segmentation masks on an image.
     
     Args:
-        image: Input image (HxWx3 numpy array)
-        masks: List of masks or single mask (HxW numpy array)
-        alpha: Transparency of the mask overlay (0-1)
-        colors: List of RGB tuples for mask colors
-        
+        image: RGB image as numpy array of shape (H, W, 3)
+        masks: Dictionary mapping obj_id -> binary mask of shape (H, W)
+        obj_ids: List of object IDs to overlay. If None, use all keys in masks.
+        alpha: Transparency of the overlay
+    
     Returns:
         Image with masks overlaid
     """
-    # Ensure masks is a batch
-    if len(np.array(masks).shape) == 2:
-        masks = [masks]
+    if obj_ids is None:
+        obj_ids = list(masks.keys())
     
-    if colors is None:
-        colors = [
-            (255, 0, 0),    # Red
-            (0, 255, 0),    # Green
-            (0, 0, 255),    # Blue
-            (255, 255, 0),  # Yellow
-            (255, 0, 255),  # Magenta
-            (0, 255, 255),  # Cyan
-            (128, 0, 0),    # Dark red
-            (0, 128, 0),    # Dark green
-            (0, 0, 128),    # Dark blue
-            (128, 128, 0),  # Olive
-        ]
-    
+    # Make a copy of the image
     overlay = image.copy()
-    h, w = image.shape[:2]
     
-    for i, mask in enumerate(masks):
-        # Convert mask to boolean if it's a float array
-        if isinstance(mask, np.ndarray) and mask.dtype != np.bool_:
-            if mask.max() <= 1.0:
-                # Mask is in range [0, 1]
-                binary_mask = mask > 0.5
-            else:
-                # Mask is in range [0, 255]
-                binary_mask = mask > 127
-        else:
-            binary_mask = mask
+    # Define colors for different objects (using tab10 colormap)
+    cmap = plt.get_cmap("tab10")
+    
+    # Overlay each mask
+    for obj_id in obj_ids:
+        if obj_id not in masks:
+            continue
         
-        # Ensure mask has correct dimensions
-        if binary_mask.shape[:2] != (h, w):
-            binary_mask = cv2.resize(
-                binary_mask.astype(np.uint8), 
-                (w, h), 
-                interpolation=cv2.INTER_NEAREST
-            )
-            binary_mask = binary_mask > 0
-            
-        color = colors[i % len(colors)]
-        colored_mask = np.zeros((h, w, 3), dtype=np.uint8)
-        colored_mask[binary_mask] = color
+        mask = masks[obj_id]
+        if mask.sum() == 0:  # Skip empty masks
+            continue
+        
+        # Get color for this object
+        color_idx = (obj_id - 1) % 10  # Map to 0-9 range for tab10
+        color = np.array(cmap(color_idx)[:3]) * 255
+        
+        # Create colored mask
+        colored_mask = np.zeros_like(image)
+        colored_mask[mask > 0] = color
+        
+        # Overlay the mask
         overlay = cv2.addWeighted(overlay, 1, colored_mask, alpha, 0)
         
-        # Add a small label with mask index
-        cv2.putText(
-            overlay, f"Mask {i+1}", 
-            (10, 30 + 30 * i), 
-            cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2
-        )
+        # Draw contour around the mask for better visibility
+        contours, _ = cv2.findContours(mask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        cv2.drawContours(overlay, contours, -1, color, 2)
+        
+        # Add object ID label
+        moments = cv2.moments(mask.astype(np.uint8))
+        if moments["m00"] > 0:
+            cx = int(moments["m10"] / moments["m00"])
+            cy = int(moments["m01"] / moments["m00"])
+            cv2.putText(overlay, f"ID: {obj_id}", (cx, cy), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+        
+        # Calculate and display mask coverage percentage
+        frame_area = mask.shape[0] * mask.shape[1]
+        positive_pixels = np.sum(mask > 0)
+        mask_coverage = positive_pixels / frame_area
+        cv2.putText(overlay, f"Coverage: {mask_coverage:.1%}", (10, 30), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
     
     return overlay
 
@@ -210,18 +204,39 @@ def process_single_video(predictor, video_path, output_path, use_tta=False):
     first_frame = inference_state["images"][0].cpu().numpy().transpose(1, 2, 0)
     h, w = first_frame.shape[:2]
     
-    # Add a click at the center of the first frame
-    # Using a more precise point selection strategy - find a good foreground point
-    # For simplicity, we'll still use the center point, but in a real application
-    # you might want to use a more sophisticated approach to find a good foreground point
-    point = [[w//2, h//2]]
-    label = [1]  # foreground
+    # Use a more robust point selection strategy with both positive and negative points
+    # Center point for the foreground object
+    center_x, center_y = w//2, h//2
     
-    # Visualize the first frame with the selected point for debugging
+    # Define foreground point at the center (where the object is)
+    fg_point = [center_x, center_y]
+    
+    # Define background points at the corners of the frame
+    # This helps SAM2 understand what is NOT the object
+    bg_points = [
+        [50, 50],                # Top-left
+        [w-50, 50],              # Top-right
+        [50, h-50],              # Bottom-left
+        [w-50, h-50]             # Bottom-right
+    ]
+    
+    # Combine all points and labels
+    points = [fg_point] + bg_points
+    labels = [1] + [0, 0, 0, 0]  # 1 for foreground, 0 for background
+    
+    # Visualize the first frame with the selected points for debugging
     debug_frame = (first_frame * 255).astype(np.uint8).copy()
-    cv2.circle(debug_frame, (point[0][0], point[0][1]), 5, (0, 255, 0), -1)
-    cv2.putText(debug_frame, "Foreground point", (point[0][0] + 10, point[0][1]), 
+    
+    # Draw foreground point (green)
+    cv2.circle(debug_frame, (fg_point[0], fg_point[1]), 5, (0, 255, 0), -1)
+    cv2.putText(debug_frame, "Foreground", (fg_point[0] + 10, fg_point[1]), 
                 cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+    
+    # Draw background points (red)
+    for i, bg_point in enumerate(bg_points):
+        cv2.circle(debug_frame, (bg_point[0], bg_point[1]), 5, (0, 0, 255), -1)
+        cv2.putText(debug_frame, f"Background {i+1}", (bg_point[0] + 10, bg_point[1]), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
     
     # Save the debug frame
     debug_dir = os.path.join(os.path.dirname(output_path), "debug")
@@ -230,16 +245,23 @@ def process_single_video(predictor, video_path, output_path, use_tta=False):
     cv2.imwrite(debug_path, cv2.cvtColor(debug_frame, cv2.COLOR_RGB2BGR))
     print(f"Saved debug frame with selected point to: {debug_path}")
     
-    print(f"Adding point at {point} with label {label} to frame 0")
+    print(f"Adding {len(points)} points with labels {labels} to frame 0")
     
-    # Add point to first frame
+    # Add points to first frame
     frame_idx, obj_ids, mask_logits = predictor.add_new_points_or_box(
         inference_state,
         frame_idx=0,
         obj_id=1,
-        points=point,
-        labels=label,
+        points=points,
+        labels=labels,
     )
+    
+    # Print information about the mask logits
+    if isinstance(mask_logits, torch.Tensor):
+        print(f"Mask logits shape: {mask_logits.shape}, type: {type(mask_logits)}")
+        print(f"Mask logits min: {mask_logits.min().item():.2f}, max: {mask_logits.max().item():.2f}")
+    else:
+        print(f"Mask logits type: {type(mask_logits)}")
     
     # Store segmentation results for all frames
     video_segments = {}
@@ -269,10 +291,12 @@ def process_single_video(predictor, video_path, output_path, use_tta=False):
             # For logits, we need to check if they're already in probability space
             if raw_mask.max() > 1.0 or raw_mask.min() < 0.0:
                 # These are logits, apply sigmoid first
-                mask = (1 / (1 + np.exp(-raw_mask)) > predictor.mask_threshold).astype(np.uint8)
+                mask_probs = 1 / (1 + np.exp(-raw_mask))
+                mask = (mask_probs > predictor.mask_threshold).astype(np.uint8)
             else:
                 # These are already probabilities
-                mask = (raw_mask > predictor.mask_threshold).astype(np.uint8)
+                mask_probs = raw_mask
+                mask = (mask_probs > predictor.mask_threshold).astype(np.uint8)
             
             # Remove any extra dimensions (e.g., from batch or channel dimensions)
             if len(mask.shape) == 3 and mask.shape[0] == 1:  # If shape is (1, H, W)
@@ -282,6 +306,19 @@ def process_single_video(predictor, video_path, output_path, use_tta=False):
                 if len(mask.shape) > 2:  # If still more than 2D, take the first slice
                     print(f"Warning: Unexpected mask shape {mask.shape}, taking first slice")
                     mask = mask[0]
+            
+            # Calculate mask coverage (percentage of frame covered)
+            frame_area = mask.shape[0] * mask.shape[1]
+            positive_pixels = np.sum(mask > 0)
+            mask_coverage = positive_pixels / frame_area
+            
+            if frame_idx % 50 == 0:
+                print(f"Frame {frame_idx}, Object {obj_id}: Mask coverage: {mask_coverage:.2%} of frame")
+                
+            # Add a sanity check for masks that cover too much of the frame
+            # If more than 70% of the frame is covered, this is likely a background mask
+            if mask_coverage > 0.7 and frame_idx % 50 == 0:
+                print(f"WARNING: Frame {frame_idx}, Object {obj_id}: Mask covers {mask_coverage:.2%} of frame - likely a background mask!")
             
             # Check if mask contains any positive pixels
             positive_pixels = np.sum(mask > 0)
