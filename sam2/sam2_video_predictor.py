@@ -767,26 +767,34 @@ class SAM2VideoPredictor(SAM2Base):
 
         # point and mask should not appear as input simultaneously on the same frame
         assert point_inputs is None or mask_inputs is None
+        
         if use_tta:
             # Use autocast to reduce VRAM usage during TTA
             with torch.amp.autocast('cuda', enabled=True):
+                # Initialize TTA manager
                 tta_mgr = TTAManager(threshold=0.5)
+                
+                # Store original frame and cache
                 raw_img = inference_state["images"][frame_idx]
                 storage_device = inference_state["storage_device"]
                 compute_device = inference_state["device"]
                 orig_img = raw_img.clone()
                 orig_cache = inference_state["cached_features"].get(frame_idx)
-                inference_state["cached_features"].pop(frame_idx, None)
+                
+                # Collect masks from all augmentations
                 tta_masks = []
-                first_obj_ptr = None
-                first_score_logits = None
+                first_out = None
+                first_pred_gpu = None
                 
                 # Process each augmentation
-                for aug_img_fn, mask_fn in tta_mgr.augmentations:
+                for aug_idx, (aug_img_fn, mask_fn) in enumerate(tta_mgr.augmentations):
+                    # Apply augmentation to the frame
                     aug_img = aug_img_fn(orig_img)
                     inference_state["images"][frame_idx] = aug_img
                     inference_state["cached_features"].pop(frame_idx, None)
-                    out, pred_gpu = self._run_single_frame_inference(
+                    
+                    # Run inference on augmented frame (without TTA to avoid recursion)
+                    aug_out, aug_pred_gpu = self._run_single_frame_inference(
                         inference_state=inference_state,
                         output_dict=output_dict,
                         frame_idx=frame_idx,
@@ -795,75 +803,70 @@ class SAM2VideoPredictor(SAM2Base):
                         point_inputs=point_inputs,
                         mask_inputs=mask_inputs,
                         reverse=reverse,
-                        run_mem_encoder=False,
-                        use_tta=False,
+                        run_mem_encoder=False,  # Skip memory encoding for augmentations
+                        use_tta=False,          # Prevent recursive TTA
                         prev_sam_mask_logits=prev_sam_mask_logits,
                     )
-                    if first_obj_ptr is None:
-                        first_obj_ptr = out["obj_ptr"]
-                        first_score_logits = out["object_score_logits"]
+                    
+                    # Store first augmentation's outputs as reference
+                    if aug_idx == 0:
+                        first_out = aug_out
+                        first_pred_gpu = aug_pred_gpu
+                    
                     # Apply inverse transform to the mask
-                    deaug = mask_fn(pred_gpu)
-                    # Store the mask for later aggregation
-                    tta_masks.append(deaug.detach().cpu().numpy())
+                    deaug_mask = mask_fn(aug_pred_gpu)
+                    tta_masks.append(deaug_mask.detach().cpu().numpy())
                 
-                # Restore original image and cache
+                # Restore original frame and cache
                 inference_state["images"][frame_idx] = orig_img
                 if orig_cache is not None:
                     inference_state["cached_features"][frame_idx] = orig_cache
                 
-                # Instead of trying to fix dimensions after aggregation, let's use the first prediction's
-                # architecture and just replace the mask data
-                
-                # Get the first prediction to use as a template
-                template_out = out
-                template_pred = pred_gpu
-                
                 # Aggregate masks from all augmentations
                 agg = tta_mgr.aggregate_masks(tta_masks)
                 
-                # Create a new tensor with the exact same shape as the template
-                # but with the aggregated mask values
-                if template_pred is not None:
-                    # Create a copy of the template prediction
-                    agg_tensor = template_pred.clone()
+                # Convert aggregated mask to tensor with same properties as original prediction
+                agg_tensor = first_pred_gpu.clone()
+                
+                # Update the mask values while preserving tensor structure
+                if agg.ndim == 2 and agg_tensor.ndim > 2:
+                    # Handle dimension differences between aggregated mask and tensor
+                    h, w = agg_tensor.shape[-2:]
                     
-                    # Replace the mask values with the aggregated values
-                    # Handle different dimensionality cases
-                    if agg.ndim == 2 and template_pred.ndim > 2:  # Simple 2D mask vs multi-dim tensor
-                        # For each spatial location, replace the mask value
-                        h, w = template_pred.shape[-2:]
-                        # Resize the aggregated mask if needed
-                        if agg.shape != (h, w):
-                            agg_resized = cv2.resize(agg, (w, h), interpolation=cv2.INTER_LINEAR)
-                        else:
-                            agg_resized = agg
-                            
-                        # Convert to tensor
-                        agg_tensor_2d = torch.from_numpy(agg_resized).to(template_pred.device)
-                        
-                        # Replace values while preserving the tensor structure
-                        if template_pred.ndim == 3:  # B, H, W
-                            agg_tensor[0] = agg_tensor_2d
-                        elif template_pred.ndim == 4:  # B, C, H, W
-                            agg_tensor[0, 0] = agg_tensor_2d
+                    # Resize if needed
+                    if agg.shape != (h, w):
+                        agg_resized = cv2.resize(agg, (w, h), interpolation=cv2.INTER_LINEAR)
                     else:
-                        # Direct replacement if dimensions match
-                        agg_tensor = torch.from_numpy(agg).to(template_pred.device)
+                        agg_resized = agg
+                    
+                    # Replace values in the correct tensor location
+                    agg_tensor_2d = torch.from_numpy(agg_resized).to(agg_tensor.device)
+                    if agg_tensor.ndim == 3:  # B, H, W
+                        agg_tensor[0] = agg_tensor_2d
+                    elif agg_tensor.ndim == 4:  # B, C, H, W
+                        agg_tensor[0, 0] = agg_tensor_2d
+                else:
+                    # Direct replacement if dimensions match
+                    agg_tensor = torch.from_numpy(agg).to(agg_tensor.device)
                 
-                # Run memory encoder on the aggregated mask
-                mem_feats, mem_pos = self._run_memory_encoder(
-                    inference_state, frame_idx, batch_size, agg_tensor, first_score_logits, False
-                )
+                # Create output dictionary based on first augmentation
+                current_out = dict(first_out)
+                current_out["pred_masks"] = agg_tensor
                 
-                # Create output dictionary
-                current_out = {
-                    "maskmem_features": mem_feats,
-                    "maskmem_pos_enc": mem_pos,
-                    "pred_masks": agg_tensor,
-                    "obj_ptr": first_obj_ptr,
-                    "object_score_logits": first_score_logits,
-                }
+                # Only run memory encoder if explicitly requested
+                # This matches the behavior of the non-TTA branch
+                if run_mem_encoder:
+                    mem_feats, mem_pos = self._run_memory_encoder(
+                        inference_state=inference_state, 
+                        frame_idx=frame_idx, 
+                        batch_size=batch_size, 
+                        high_res_masks=agg_tensor, 
+                        object_score_logits=current_out["object_score_logits"], 
+                        is_mask_from_pts=False
+                    )
+                    current_out["maskmem_features"] = mem_feats
+                    current_out["maskmem_pos_enc"] = mem_pos
+                
                 return current_out, agg_tensor
         else:
             current_out = self.track_step(
@@ -927,6 +930,35 @@ class SAM2VideoPredictor(SAM2Base):
         _, _, current_vision_feats, _, feat_sizes = self._get_image_feature(
             inference_state, frame_idx, batch_size
         )
+        
+        # Check if high_res_masks has the incorrect dimensions (from TTA aggregation)
+        # The memory encoder expects dimensions to match current_vision_feats
+        # In TTA case, we might have dimension mismatch at dimension 3
+        if (high_res_masks.dim() >= 4 and current_vision_feats[-1].dim() >= 2 and 
+            high_res_masks.size(3) != 16 and current_vision_feats[-1].size(0) == 16):
+            # We need to reshape the high_res_masks to match expected dimensions
+            # Create a new tensor with correct dimensions, copying from high_res_masks
+            shaped_masks = torch.zeros(
+                high_res_masks.size(0),
+                high_res_masks.size(1),
+                high_res_masks.size(2),
+                16,  # Use the expected dimension size
+                device=high_res_masks.device,
+                dtype=high_res_masks.dtype
+            )
+            
+            # Copy values from smaller dimension to the correctly sized tensor
+            # We use the min of dimensions to avoid index errors
+            min_dim = min(high_res_masks.size(3), 16)
+            if high_res_masks.dim() == 4 and high_res_masks.size(1) == 1:
+                # Common case: B, 1, H, W format
+                shaped_masks[:, :, :, :min_dim] = high_res_masks[:, :, :, :min_dim]
+            else:
+                # Fallback for other formats - reshape as needed
+                shaped_masks = high_res_masks
+                
+            high_res_masks = shaped_masks
+            
         maskmem_features, maskmem_pos_enc = self._encode_new_memory(
             current_vision_feats=current_vision_feats,
             feat_sizes=feat_sizes,
