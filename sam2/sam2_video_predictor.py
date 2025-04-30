@@ -769,7 +769,7 @@ class SAM2VideoPredictor(SAM2Base):
         assert point_inputs is None or mask_inputs is None
         if use_tta:
             # Use autocast to reduce VRAM usage during TTA
-            with torch.cuda.amp.autocast(enabled=True):
+            with torch.amp.autocast('cuda', enabled=True):
                 tta_mgr = TTAManager(threshold=0.5)
                 raw_img = inference_state["images"][frame_idx]
                 storage_device = inference_state["storage_device"]
@@ -815,6 +815,18 @@ class SAM2VideoPredictor(SAM2Base):
                 # Aggregate masks from all augmentations
                 agg = tta_mgr.aggregate_masks(tta_masks)
                 agg_tensor = torch.from_numpy(agg).to(storage_device)
+                
+                # Ensure the aggregated mask has the same shape as pred_gpu
+                # Get reference shape from one of the outputs
+                ref_shape = pred_gpu.shape
+                if agg_tensor.shape != ref_shape:
+                    # Resize if needed to match expected dimensions
+                    agg_tensor = torch.nn.functional.interpolate(
+                        agg_tensor.unsqueeze(0),  # Add batch dimension for interpolate
+                        size=(ref_shape[-2], ref_shape[-1]),
+                        mode='bilinear',
+                        align_corners=False
+                    ).squeeze(0)  # Remove batch dimension
                 
                 # Run memory encoder on the aggregated mask
                 mem_feats, mem_pos = self._run_memory_encoder(
