@@ -176,12 +176,16 @@ def process_video(video_path, output_dir, use_tta=False):
     
     # Process baseline (no TTA)
     print("\n=== Processing baseline (no TTA) ===")
+    # Set a lower threshold for baseline to ensure we get a mask
+    predictor.mask_threshold = 0.3  # Lower threshold for baseline
     process_result = process_single_video(predictor, video_path, baseline_output_path, use_tta=False)
     print(f"Saved baseline video to: {baseline_output_path}")
     
     # Process with TTA if requested
     if use_tta:
         print("\n=== Processing with TTA ===")
+        # Reset threshold for TTA
+        predictor.mask_threshold = 0.3  # Same lower threshold for TTA
         process_result = process_single_video(predictor, video_path, tta_output_path, use_tta=True)
         print(f"Saved TTA video to: {tta_output_path}")
         
@@ -202,11 +206,29 @@ def process_single_video(predictor, video_path, output_path, use_tta=False):
         offload_video_to_cpu=True
     )
     
-    # Add a click at the center of the first frame
+    # Get the first frame for visualization and point selection
     first_frame = inference_state["images"][0].cpu().numpy().transpose(1, 2, 0)
     h, w = first_frame.shape[:2]
+    
+    # Add a click at the center of the first frame
+    # Using a more precise point selection strategy - find a good foreground point
+    # For simplicity, we'll still use the center point, but in a real application
+    # you might want to use a more sophisticated approach to find a good foreground point
     point = [[w//2, h//2]]
     label = [1]  # foreground
+    
+    # Visualize the first frame with the selected point for debugging
+    debug_frame = (first_frame * 255).astype(np.uint8).copy()
+    cv2.circle(debug_frame, (point[0][0], point[0][1]), 5, (0, 255, 0), -1)
+    cv2.putText(debug_frame, "Foreground point", (point[0][0] + 10, point[0][1]), 
+                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+    
+    # Save the debug frame
+    debug_dir = os.path.join(os.path.dirname(output_path), "debug")
+    os.makedirs(debug_dir, exist_ok=True)
+    debug_path = os.path.join(debug_dir, f"{os.path.basename(output_path).split('.')[0]}_point.jpg")
+    cv2.imwrite(debug_path, cv2.cvtColor(debug_frame, cv2.COLOR_RGB2BGR))
+    print(f"Saved debug frame with selected point to: {debug_path}")
     
     print(f"Adding point at {point} with label {label} to frame 0")
     
@@ -236,8 +258,22 @@ def process_single_video(predictor, video_path, output_path, use_tta=False):
         # Store binary masks for each object
         video_segments[frame_idx] = {}
         for i, obj_id in enumerate(obj_ids):
-            # Extract mask and ensure it has the right dimensions
-            mask = (mask_logits[i] > predictor.mask_threshold).cpu().numpy()
+            # Extract raw mask logits for better debugging
+            raw_mask = mask_logits[i].cpu().numpy()
+            
+            # Print some statistics about the raw mask for debugging
+            if frame_idx % 50 == 0:
+                print(f"Frame {frame_idx}, Object {obj_id}: Raw mask shape={raw_mask.shape}, min={raw_mask.min():.2f}, max={raw_mask.max():.2f}")
+            
+            # Apply threshold to get binary mask
+            # For logits, we need to check if they're already in probability space
+            if raw_mask.max() > 1.0 or raw_mask.min() < 0.0:
+                # These are logits, apply sigmoid first
+                mask = (1 / (1 + np.exp(-raw_mask)) > predictor.mask_threshold).astype(np.uint8)
+            else:
+                # These are already probabilities
+                mask = (raw_mask > predictor.mask_threshold).astype(np.uint8)
+            
             # Remove any extra dimensions (e.g., from batch or channel dimensions)
             if len(mask.shape) == 3 and mask.shape[0] == 1:  # If shape is (1, H, W)
                 mask = mask[0]  # Convert to (H, W)
@@ -246,6 +282,12 @@ def process_single_video(predictor, video_path, output_path, use_tta=False):
                 if len(mask.shape) > 2:  # If still more than 2D, take the first slice
                     print(f"Warning: Unexpected mask shape {mask.shape}, taking first slice")
                     mask = mask[0]
+            
+            # Check if mask contains any positive pixels
+            positive_pixels = np.sum(mask > 0)
+            if frame_idx % 50 == 0 or positive_pixels == 0:
+                print(f"Frame {frame_idx}, Object {obj_id}: Mask contains {positive_pixels} positive pixels")
+                
             # Store the properly dimensioned mask
             video_segments[frame_idx][obj_id] = mask
         
@@ -328,13 +370,29 @@ def save_video_with_masks(video_path, video_segments, output_path):
                         interpolation=cv2.INTER_NEAREST
                     )
                 
-                # Create colored mask overlay
-                mask_overlay = np.zeros_like(frame)
-                mask_overlay[binary_mask > 0] = color
+                # Check if mask contains any positive pixels
+                positive_pixels = np.sum(binary_mask > 0)
                 
-                # Overlay mask on frame
-                alpha = 0.5
-                frame = cv2.addWeighted(frame, 1.0, mask_overlay, alpha, 0)
+                if positive_pixels > 0:
+                    # Create colored mask overlay
+                    mask_overlay = np.zeros_like(frame)
+                    mask_overlay[binary_mask > 0] = color
+                    
+                    # Overlay mask on frame
+                    alpha = 0.5
+                    frame = cv2.addWeighted(frame, 1.0, mask_overlay, alpha, 0)
+                    
+                    # Draw a border around the mask for better visibility
+                    # Find contours of the mask
+                    contours, _ = cv2.findContours(binary_mask.astype(np.uint8), 
+                                                  cv2.RETR_EXTERNAL, 
+                                                  cv2.CHAIN_APPROX_SIMPLE)
+                    # Draw contours on the frame
+                    cv2.drawContours(frame, contours, -1, color, 2)
+                else:
+                    # If no positive pixels, print a warning
+                    if frame_idx % 20 == 0:
+                        print(f"Frame {frame_idx}, Object {obj_id}: No positive pixels in mask")
                 
                 # Add a small label with object ID
                 cv2.putText(
