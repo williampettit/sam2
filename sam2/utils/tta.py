@@ -46,20 +46,24 @@ class TTAManager:
             results.append((aug_img, mask_fn))
         return results
 
-    def aggregate_masks(self, masks: List[np.ndarray]) -> np.ndarray:
+    def aggregate_masks(self, masks: List[np.ndarray], apply_threshold: bool = True) -> np.ndarray:
         """
-        Aggregate a list of mask arrays via pixel-wise mean and apply threshold.
+        Aggregate a list of mask arrays via pixel-wise mean and optionally apply threshold.
         
         Args:
             masks: List of mask arrays in float32 format (logits).
+            apply_threshold: Whether to apply threshold to create binary mask (default: True).
+                             For testing purposes, this can be set to False to return raw mean values.
             
         Returns:
-            Binary mask after applying mean aggregation and thresholding at 0.5.
+            If apply_threshold is True: Binary mask after applying mean aggregation and thresholding.
+            If apply_threshold is False: Raw mean mask values (float array).
         """
         # Stack masks along a new axis and calculate mean
         mean_mask = np.mean(np.stack(masks, axis=0), axis=0)
         
-        # Apply threshold to get binary mask
-        binary_mask = mean_mask > self.threshold
-        
-        return binary_mask
+        # Apply threshold to get binary mask if requested
+        if apply_threshold:
+            return mean_mask > self.threshold
+        else:
+            return mean_mask
