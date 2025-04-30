@@ -48,6 +48,13 @@ def test_tta_manager_application_and_aggregation():
     results = mgr.apply_augmentations(x)
     assert len(results) == len(mgr.augmentations)
     masks = [np.full((1,16,16), fill_value=i) for i in range(len(results))]
-    agg = mgr.aggregate_masks(masks)
-    expected = np.mean(np.stack(masks, axis=0), axis=0)
-    np.testing.assert_allclose(agg, expected)
+    
+    # Test raw aggregation (without threshold)
+    agg_raw = mgr.aggregate_masks(masks, apply_threshold=False)
+    expected_raw = np.mean(np.stack(masks, axis=0), axis=0)
+    np.testing.assert_allclose(agg_raw, expected_raw)
+    
+    # Test thresholded aggregation
+    agg_thresholded = mgr.aggregate_masks(masks, apply_threshold=True)
+    expected_thresholded = expected_raw > mgr.threshold
+    np.testing.assert_equal(agg_thresholded, expected_thresholded)
