@@ -306,6 +306,7 @@ class SAM2VideoPredictor(SAM2Base):
         frame_idx,
         obj_id,
         mask,
+        use_tta=False,
     ):
         """Add new mask to a frame."""
         obj_idx = self._obj_id_to_idx(inference_state, obj_id)
@@ -366,6 +367,7 @@ class SAM2VideoPredictor(SAM2Base):
             # allows us to enforce non-overlapping constraints on all objects before encoding
             # them into memory.
             run_mem_encoder=False,
+            use_tta=use_tta,
         )
         # Add the output to the output dict (to be used as future memory)
         obj_temp_output_dict[storage_key][frame_idx] = current_out
