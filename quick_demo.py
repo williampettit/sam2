@@ -56,7 +56,7 @@ def process_image(image_path, output_dir, use_tta=False, box=None):
     # With TTA
     if use_tta:
         predictor.set_image(image)
-        with torch.cuda.amp.autocast(enabled=True):
+        with torch.amp.autocast('cuda', enabled=True):
             if box is not None:
                 box_coords = np.array(box)
                 tta_masks, *_ = predictor.predict_with_tta(
@@ -77,7 +77,7 @@ def process_image(image_path, output_dir, use_tta=False, box=None):
     
     # Without TTA (baseline)
     predictor.set_image(image)
-    with torch.cuda.amp.autocast(enabled=True):
+    with torch.amp.autocast('cuda', enabled=True):
         if box is not None:
             box_coords = np.array(box)
             baseline_masks, *_ = predictor.predict(
