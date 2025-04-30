@@ -16,21 +16,33 @@ from sam2.sam2_video_predictor import SAM2VideoPredictor
 
 
 def overlay_masks_on_image(image, masks, alpha=0.5, colors=None):
-    """Overlay masks on the image with different colors."""
-    if len(masks.shape) == 2:  # Single mask
-        masks = masks[None, ...]
+    """Overlay masks on an image with different colors."""
+    # Ensure masks is a batch
+    if len(np.array(masks).shape) == 2:
+        masks = [masks]
     
     if colors is None:
         colors = [(255, 0, 0), (0, 255, 0), (0, 0, 255),
-                  (255, 255, 0), (255, 0, 255), (0, 255, 255)]
+                   (255, 255, 0), (255, 0, 255), (0, 255, 255)]
     
     overlay = image.copy()
     h, w = image.shape[:2]
     
     for i, mask in enumerate(masks):
+        # Convert mask to boolean if it's a float array
+        if isinstance(mask, np.ndarray) and mask.dtype != np.bool_:
+            if mask.max() <= 1.0:
+                # Mask is in range [0, 1]
+                binary_mask = mask > 0.5
+            else:
+                # Mask is in range [0, 255]
+                binary_mask = mask > 127
+        else:
+            binary_mask = mask
+            
         color = colors[i % len(colors)]
         colored_mask = np.zeros((h, w, 3), dtype=np.uint8)
-        colored_mask[mask] = color
+        colored_mask[binary_mask] = color
         overlay = cv2.addWeighted(overlay, 1, colored_mask, alpha, 0)
     
     return overlay
