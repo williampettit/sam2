@@ -361,7 +361,7 @@ class SAM2ImagePredictor:
                     box,
                     mask_input,
                     multimask_output,
-                    True,  # Always return logits for better aggregation
+                    return_logits,
                     normalize_coords,
                 )
                 # de-augment mask array
