@@ -766,53 +766,68 @@ class SAM2VideoPredictor(SAM2Base):
         # point and mask should not appear as input simultaneously on the same frame
         assert point_inputs is None or mask_inputs is None
         if use_tta:
-            tta_mgr = TTAManager()
-            raw_img = inference_state["images"][frame_idx]
-            storage_device = inference_state["storage_device"]
-            orig_img = raw_img.clone()
-            orig_cache = inference_state["cached_features"].get(frame_idx)
-            inference_state["cached_features"].pop(frame_idx, None)
-            tta_masks = []
-            first_obj_ptr = None
-            first_score_logits = None
-            for aug_img_fn, mask_fn in tta_mgr.augmentations:
-                aug_img = aug_img_fn(orig_img)
-                inference_state["images"][frame_idx] = aug_img
+            # Use autocast to reduce VRAM usage during TTA
+            with torch.cuda.amp.autocast(enabled=True):
+                tta_mgr = TTAManager(threshold=0.5)
+                raw_img = inference_state["images"][frame_idx]
+                storage_device = inference_state["storage_device"]
+                compute_device = inference_state["device"]
+                orig_img = raw_img.clone()
+                orig_cache = inference_state["cached_features"].get(frame_idx)
                 inference_state["cached_features"].pop(frame_idx, None)
-                out, pred_gpu = self._run_single_frame_inference(
-                    inference_state=inference_state,
-                    output_dict=output_dict,
-                    frame_idx=frame_idx,
-                    batch_size=batch_size,
-                    is_init_cond_frame=is_init_cond_frame,
-                    point_inputs=point_inputs,
-                    mask_inputs=mask_inputs,
-                    reverse=reverse,
-                    run_mem_encoder=False,
-                    use_tta=False,
-                    prev_sam_mask_logits=prev_sam_mask_logits,
+                tta_masks = []
+                first_obj_ptr = None
+                first_score_logits = None
+                
+                # Process each augmentation
+                for aug_img_fn, mask_fn in tta_mgr.augmentations:
+                    aug_img = aug_img_fn(orig_img)
+                    inference_state["images"][frame_idx] = aug_img
+                    inference_state["cached_features"].pop(frame_idx, None)
+                    out, pred_gpu = self._run_single_frame_inference(
+                        inference_state=inference_state,
+                        output_dict=output_dict,
+                        frame_idx=frame_idx,
+                        batch_size=batch_size,
+                        is_init_cond_frame=is_init_cond_frame,
+                        point_inputs=point_inputs,
+                        mask_inputs=mask_inputs,
+                        reverse=reverse,
+                        run_mem_encoder=False,
+                        use_tta=False,
+                        prev_sam_mask_logits=prev_sam_mask_logits,
+                    )
+                    if first_obj_ptr is None:
+                        first_obj_ptr = out["obj_ptr"]
+                        first_score_logits = out["object_score_logits"]
+                    # Apply inverse transform to the mask
+                    deaug = mask_fn(pred_gpu)
+                    # Store the mask for later aggregation
+                    tta_masks.append(deaug.detach().cpu().numpy())
+                
+                # Restore original image and cache
+                inference_state["images"][frame_idx] = orig_img
+                if orig_cache is not None:
+                    inference_state["cached_features"][frame_idx] = orig_cache
+                
+                # Aggregate masks from all augmentations
+                agg = tta_mgr.aggregate_masks(tta_masks)
+                agg_tensor = torch.from_numpy(agg).to(storage_device)
+                
+                # Run memory encoder on the aggregated mask
+                mem_feats, mem_pos = self._run_memory_encoder(
+                    inference_state, frame_idx, batch_size, agg_tensor, first_score_logits, False
                 )
-                if first_obj_ptr is None:
-                    first_obj_ptr = out["obj_ptr"]
-                    first_score_logits = out["object_score_logits"]
-                deaug = mask_fn(pred_gpu)
-                tta_masks.append(deaug.detach().cpu().numpy())
-            inference_state["images"][frame_idx] = orig_img
-            if orig_cache is not None:
-                inference_state["cached_features"][frame_idx] = orig_cache
-            agg = tta_mgr.aggregate_masks(tta_masks)
-            agg_tensor = torch.from_numpy(agg).to(storage_device)
-            mem_feats, mem_pos = self._run_memory_encoder(
-                inference_state, frame_idx, batch_size, agg_tensor, first_score_logits, False
-            )
-            current_out = {
-                "maskmem_features": mem_feats,
-                "maskmem_pos_enc": mem_pos,
-                "pred_masks": agg_tensor,
-                "obj_ptr": first_obj_ptr,
-                "object_score_logits": first_score_logits,
-            }
-            return current_out, agg_tensor
+                
+                # Create output dictionary
+                current_out = {
+                    "maskmem_features": mem_feats,
+                    "maskmem_pos_enc": mem_pos,
+                    "pred_masks": agg_tensor,
+                    "obj_ptr": first_obj_ptr,
+                    "object_score_logits": first_score_logits,
+                }
+                return current_out, agg_tensor
         else:
             current_out = self.track_step(
                 frame_idx=frame_idx,
