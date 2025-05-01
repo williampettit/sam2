@@ -41,7 +41,10 @@ class TTAManager:
             (lambda img: pil_adjust_brightness(img, factor=1.1), lambda m: m),  # brightness
             (lambda img: pil_adjust_contrast(img, factor=1.1), lambda m: m),  # contrast
             (lambda img: pil_adjust_saturation(img, factor=1.1), lambda m: m),  # saturation
-            (lambda img: pil_adjust_hue(img, factor=0.25), lambda m: m),  # hue
+            (lambda img: pil_adjust_brightness(img, factor=0.9), lambda m: m),  # brightness
+            (lambda img: pil_adjust_contrast(img, factor=0.9), lambda m: m),  # contrast
+            (lambda img: pil_adjust_saturation(img, factor=0.9), lambda m: m),  # saturation
+            # (lambda img: pil_adjust_hue(img, factor=0.25), lambda m: m),  # hue
         ]
 
     def apply_augmentations(self, image: torch.Tensor) -> List[Tuple[torch.Tensor, Callable[[torch.Tensor], torch.Tensor]]]:
