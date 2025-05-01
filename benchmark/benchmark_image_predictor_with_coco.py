@@ -50,6 +50,7 @@ def parse_args():
             "large",
         ]
     )
+    parser.add_argument("--seed", type=int, default=None, help="Random seed for reproducibility")
     args = parser.parse_args()
     args.model_id = f"facebook/sam2-hiera-{args.model_size}"
     return args
@@ -449,6 +450,10 @@ def visualize_results(results, output_path):
 
 
 def main():
+    # Seed random number generator for reproducibility, if CLI arg is provided
+    if args.seed is not None:
+        random.seed(args.seed)
+
     # Setup directories
     setup_directories()
     
