@@ -147,8 +147,15 @@ def process_image(image_path, output_dir, use_tta=False, box=None):
         print(f"Saved side-by-side comparison to: {comparison_path}")
 
 
-def process_video(video_path, output_dir, use_tta=False):
-    """Process a video with SAM2 and save the results."""
+def process_video(video_path, output_dir, use_tta=False, box=None):
+    """Process a video with SAM2 and save the results.
+    
+    Args:
+        video_path: Path to the input video
+        output_dir: Directory to save the output
+        use_tta: Whether to use test-time augmentation
+        box: Optional bounding box in format [x1, y1, x2, y2]
+    """
     print(f"Processing video: {video_path}")
     os.makedirs(output_dir, exist_ok=True)
     
@@ -172,7 +179,7 @@ def process_video(video_path, output_dir, use_tta=False):
     print("\n=== Processing baseline (no TTA) ===")
     # Set a lower threshold for baseline to ensure we get a mask
     predictor.mask_threshold = 0.3  # Lower threshold for baseline
-    process_result = process_single_video(predictor, video_path, baseline_output_path, use_tta=False)
+    process_result = process_single_video(predictor, video_path, baseline_output_path, use_tta=False, box=box)
     print(f"Saved baseline video to: {baseline_output_path}")
     
     # Process with TTA if requested
@@ -180,7 +187,7 @@ def process_video(video_path, output_dir, use_tta=False):
         print("\n=== Processing with TTA ===")
         # Reset threshold for TTA
         predictor.mask_threshold = 0.3  # Same lower threshold for TTA
-        process_result = process_single_video(predictor, video_path, tta_output_path, use_tta=True)
+        process_result = process_single_video(predictor, video_path, tta_output_path, use_tta=True, box=box)
         print(f"Saved TTA video to: {tta_output_path}")
         
         # Create side-by-side comparison
@@ -192,8 +199,16 @@ def process_video(video_path, output_dir, use_tta=False):
         print(f"Saved side-by-side comparison to: {os.path.join(output_dir, f'{video_name}_comparison.mp4')}")
 
 
-def process_single_video(predictor, video_path, output_path, use_tta=False):
-    """Process a single video with or without TTA and save the results."""
+def process_single_video(predictor, video_path, output_path, use_tta=False, box=None):
+    """Process a single video with or without TTA and save the results.
+    
+    Args:
+        predictor: SAM2VideoPredictor instance
+        video_path: Path to input video
+        output_path: Path to save output video
+        use_tta: Whether to use test-time augmentation
+        box: Optional bounding box in format [x1, y1, x2, y2]
+    """
     # Initialize inference state
     inference_state = predictor.init_state(
         video_path=video_path,
@@ -204,57 +219,61 @@ def process_single_video(predictor, video_path, output_path, use_tta=False):
     first_frame = inference_state["images"][0].cpu().numpy().transpose(1, 2, 0)
     h, w = first_frame.shape[:2]
     
-    # Use a more robust point selection strategy with both positive and negative points
-    # Center point for the foreground object
-    center_x, center_y = w//2, h//2
-    
-    # Define foreground point at the center (where the object is)
-    fg_point = [center_x, center_y]
-    
-    # Define background points at the corners of the frame
-    # This helps SAM2 understand what is NOT the object
-    bg_points = [
-        [50, 50],                # Top-left
-        [w-50, 50],              # Top-right
-        [50, h-50],              # Bottom-left
-        [w-50, h-50]             # Bottom-right
-    ]
-    
-    # Combine all points and labels
-    points = [fg_point] + bg_points
-    labels = [1] + [0, 0, 0, 0]  # 1 for foreground, 0 for background
-    
-    # Visualize the first frame with the selected points for debugging
+    # Create debug frame for visualization
     debug_frame = (first_frame * 255).astype(np.uint8).copy()
     
-    # Draw foreground point (green)
-    cv2.circle(debug_frame, (fg_point[0], fg_point[1]), 5, (0, 255, 0), -1)
-    cv2.putText(debug_frame, "Foreground", (fg_point[0] + 10, fg_point[1]), 
-                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-    
-    # Draw background points (red)
-    for i, bg_point in enumerate(bg_points):
-        cv2.circle(debug_frame, (bg_point[0], bg_point[1]), 5, (0, 0, 255), -1)
-        cv2.putText(debug_frame, f"Background {i+1}", (bg_point[0] + 10, bg_point[1]), 
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+    # Determine whether to use box or point
+    if box is not None:
+        # Use the provided bounding box
+        x1, y1, x2, y2 = box
+        
+        # Draw the box on the debug frame
+        cv2.rectangle(debug_frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+        cv2.putText(debug_frame, "Bounding Box", (x1, y1 - 10), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+        
+        print(f"Using bounding box: {box}")
+    else:
+        # Fall back to a single point at the center of the frame
+        point = [[w//2, h//2]]
+        label = [1]  # foreground
+        
+        # Draw the point on the debug frame
+        cv2.circle(debug_frame, (point[0][0], point[0][1]), 5, (0, 255, 0), -1)
+        cv2.putText(debug_frame, "Center Point", (point[0][0] + 10, point[0][1]), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+        
+        print(f"Using center point: {point}")
     
     # Save the debug frame
     debug_dir = os.path.join(os.path.dirname(output_path), "debug")
     os.makedirs(debug_dir, exist_ok=True)
-    debug_path = os.path.join(debug_dir, f"{os.path.basename(output_path).split('.')[0]}_point.jpg")
+    debug_path = os.path.join(debug_dir, f"{os.path.basename(output_path).split('.')[0]}_prompt.jpg")
     cv2.imwrite(debug_path, cv2.cvtColor(debug_frame, cv2.COLOR_RGB2BGR))
-    print(f"Saved debug frame with selected point to: {debug_path}")
+    print(f"Saved debug frame with prompt to: {debug_path}")
     
-    print(f"Adding {len(points)} points with labels {labels} to frame 0")
-    
-    # Add points to first frame
-    frame_idx, obj_ids, mask_logits = predictor.add_new_points_or_box(
-        inference_state,
-        frame_idx=0,
-        obj_id=1,
-        points=points,
-        labels=labels,
-    )
+    # Add prompt to first frame
+    if box is not None:
+        # Use bounding box
+        print(f"Adding bounding box {box} to frame 0")
+        frame_idx, obj_ids, mask_logits = predictor.add_new_points_or_box(
+            inference_state,
+            frame_idx=0,
+            obj_id=1,
+            box=box
+        )
+    else:
+        # Use center point
+        point = [[w//2, h//2]]
+        label = [1]  # foreground
+        print(f"Adding point {point} with label {label} to frame 0")
+        frame_idx, obj_ids, mask_logits = predictor.add_new_points_or_box(
+            inference_state,
+            frame_idx=0,
+            obj_id=1,
+            points=point,
+            labels=label,
+        )
     
     # Print information about the mask logits
     if isinstance(mask_logits, torch.Tensor):
@@ -476,7 +495,7 @@ def main():
     is_video = ext in ['.mp4', '.avi', '.mov', '.mkv']
     
     if is_video:
-        process_video(args.input, args.output_dir, args.use_tta)
+        process_video(args.input, args.output_dir, args.use_tta, args.box)
     else:
         process_image(args.input, args.output_dir, args.use_tta, args.box)
 
