@@ -12,6 +12,11 @@ from sam2.utils.transforms import (
     vertical_flip_mask,
     rotate_image,
     rotate_mask,
+    pil_adjust_brightness,
+    pil_adjust_contrast,
+    pil_adjust_saturation,
+    pil_adjust_hue,
+    pil_grayscale,
 )
 
 class TTAManager:
@@ -20,18 +25,23 @@ class TTAManager:
         # list of (image_fn, mask_fn)
         self.augmentations: List[Tuple[Callable[[torch.Tensor], torch.Tensor], Callable[[torch.Tensor], torch.Tensor]]] = [
             (lambda x: x, lambda m: m),  # original
-            (horizontal_flip_image, horizontal_flip_mask),  # horizontal flip
-            (vertical_flip_image, vertical_flip_mask),  # vertical flip
-            (lambda x: rotate_image(x, 90), lambda m: rotate_mask(m, 90)),  # rotate 90
-            (lambda x: rotate_image(x, -90), lambda m: rotate_mask(m, -90)),  # rotate 270/rotate -90
+            # (horizontal_flip_image, horizontal_flip_mask),  # horizontal flip
+            # (vertical_flip_image, vertical_flip_mask),  # vertical flip
+            # (lambda x: rotate_image(x, 90), lambda m: rotate_mask(m, 90)),  # rotate 90
+            # (lambda x: rotate_image(x, -90), lambda m: rotate_mask(m, -90)),  # rotate 270/rotate -90
         ]
         # PIL-based TTA ops for image predictor
         self.pil_augmentations: List[Tuple[Callable, Callable]] = [
             (lambda img: img, lambda m: m),  # original
             # (ImageOps.mirror, lambda m: np.flip(m, axis=-1)),  # horizontal flip
             # (ImageOps.flip, lambda m: np.flip(m, axis=-2)),  # vertical flip
-            (lambda img: img.rotate(90, expand=True), lambda m: np.rot90(m, k=3, axes=(1,2))),  # rotate 90
-            (lambda img: img.rotate(270, expand=True), lambda m: np.rot90(m, k=1, axes=(1,2))),  # rotate 270
+            # (lambda img: img.rotate(90, expand=True), lambda m: np.rot90(m, k=3, axes=(1,2))),  # rotate 90
+            # (lambda img: img.rotate(270, expand=True), lambda m: np.rot90(m, k=1, axes=(1,2))),  # rotate 270
+            (pil_grayscale, lambda m: m),  # grayscale
+            (pil_adjust_brightness, lambda m: m),  # brightness
+            (pil_adjust_contrast, lambda m: m),  # contrast
+            (pil_adjust_saturation, lambda m: m),  # saturation
+            (pil_adjust_hue, lambda m: m),  # hue
         ]
 
     def apply_augmentations(self, image: torch.Tensor) -> List[Tuple[torch.Tensor, Callable[[torch.Tensor], torch.Tensor]]]:
@@ -45,7 +55,7 @@ class TTAManager:
             results.append((aug_img, mask_fn))
         return results
 
-    def aggregate_masks(self, masks: List[np.ndarray], apply_threshold: bool = True) -> np.ndarray:
+    def aggregate_masks_max(self, masks: List[np.ndarray], apply_threshold: bool = True) -> np.ndarray:
         """
         Aggregate a list of mask arrays via pixel-wise max and optionally apply threshold.
         
@@ -70,7 +80,7 @@ class TTAManager:
         else:
             return max_mask
 
-    def aggregate_masks_mean(self, masks: List[np.ndarray], apply_threshold: bool = True) -> np.ndarray:
+    def aggregate_masks(self, masks: List[np.ndarray], apply_threshold: bool = True) -> np.ndarray:
         """
         Aggregate a list of mask arrays via pixel-wise mean and optionally apply threshold.
         

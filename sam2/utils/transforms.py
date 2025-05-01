@@ -150,3 +150,104 @@ def rotate_image(image: torch.Tensor, angle: float) -> torch.Tensor:
 def rotate_mask(mask: torch.Tensor, angle: float) -> torch.Tensor:
     """Inverse rotate mask by angle with nearest neighbor to avoid artifacts."""
     return TF.rotate(mask, angle=-angle, interpolation=InterpolationMode.NEAREST)
+
+
+# PIL-based color ops
+
+from PIL import Image, ImageEnhance
+import colorsys
+import numpy as np
+
+def pil_adjust_brightness(image: Image, factor: float) -> Image:
+    """Adjust brightness of an image.
+    
+    Args:
+        image: PIL Image to adjust
+        factor: Brightness adjustment factor. 0 gives black image, 
+               1 gives original image, values > 1 increase brightness
+    
+    Returns:
+        Brightness adjusted PIL Image
+    """
+    enhancer = ImageEnhance.Brightness(image)
+    return enhancer.enhance(factor)
+
+
+def pil_adjust_contrast(image: Image, factor: float) -> Image:
+    """Adjust contrast of an image.
+    
+    Args:
+        image: PIL Image to adjust
+        factor: Contrast adjustment factor. 0 gives solid gray image, 
+               1 gives original image, values > 1 increase contrast
+    
+    Returns:
+        Contrast adjusted PIL Image
+    """
+    enhancer = ImageEnhance.Contrast(image)
+    return enhancer.enhance(factor)
+
+
+def pil_adjust_saturation(image: Image, factor: float) -> Image:
+    """Adjust saturation of an image.
+    
+    Args:
+        image: PIL Image to adjust
+        factor: Saturation adjustment factor. 0 gives grayscale image, 
+               1 gives original image, values > 1 increase saturation
+    
+    Returns:
+        Saturation adjusted PIL Image
+    """
+    enhancer = ImageEnhance.Color(image)
+    return enhancer.enhance(factor)
+
+
+def pil_adjust_hue(image: Image, factor: float) -> Image:
+    """Adjust hue of an image.
+    
+    Args:
+        image: PIL Image to adjust
+        factor: Hue adjustment factor in range [-0.5, 0.5].
+               0 gives original image, negative values decrease hue,
+               positive values increase hue.
+    
+    Returns:
+        Hue adjusted PIL Image
+    """
+    # Convert to HSV for hue adjustment
+    # Convert PIL image to numpy array
+    arr = np.array(image.convert('RGB'))
+    
+    # Convert RGB to HSV
+    h, s, v = [], [], []
+    for r, g, b in arr.reshape(-1, 3):
+        hsv = colorsys.rgb_to_hsv(r/255., g/255., b/255.)
+        h.append((hsv[0] + factor) % 1.0)  # Adjust hue and wrap around to [0,1]
+        s.append(hsv[1])
+        v.append(hsv[2])
+    
+    # Convert back to RGB
+    rgb = []
+    for i in range(len(h)):
+        r, g, b = colorsys.hsv_to_rgb(h[i], s[i], v[i])
+        rgb.append((int(r*255), int(g*255), int(b*255)))
+    
+    # Reshape and convert back to PIL image
+    rgb_arr = np.array(rgb, dtype=np.uint8).reshape(arr.shape)
+    return Image.fromarray(rgb_arr)
+
+
+def pil_grayscale(image: Image) -> Image:
+    """
+    Convert image to grayscale.
+    
+    Args:
+        image: PIL Image to convert to grayscale
+        
+    Returns:
+        Grayscale PIL Image (still in RGB mode for compatibility)
+    """
+    # Convert to grayscale and back to RGB mode to keep 3 channels
+    grayscale = image.convert('L')
+    return grayscale.convert('RGB')
