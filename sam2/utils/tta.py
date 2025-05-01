@@ -62,7 +62,7 @@ class TTAManager:
             results.append((aug_img, mask_fn))
         return results
 
-    def aggregate_masks_max(self, masks: List[np.ndarray], apply_threshold: bool = True) -> np.ndarray:
+    def aggregate_masks(self, masks: List[np.ndarray], apply_threshold: bool = True) -> np.ndarray:
         """
         Aggregate a list of mask arrays via pixel-wise max and optionally apply threshold.
         
@@ -87,7 +87,7 @@ class TTAManager:
         else:
             return max_mask
 
-    def aggregate_masks(self, masks: List[np.ndarray], apply_threshold: bool = True) -> np.ndarray:
+    def aggregate_masks_mean(self, masks: List[np.ndarray], apply_threshold: bool = True) -> np.ndarray:
         """
         Aggregate a list of mask arrays via pixel-wise mean and optionally apply threshold.
         
