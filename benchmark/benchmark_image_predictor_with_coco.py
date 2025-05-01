@@ -34,7 +34,7 @@ from sam2.build_sam import build_sam2_hf
 # Constants
 DATA_DIR = os.path.expanduser("~/data/coco_benchmark")
 COCO_DIR = os.path.join(DATA_DIR, "coco2017")
-RESULTS_DIR = os.path.join(DATA_DIR, "results")
+RESULTS_DIR = os.path.join(DATA_DIR, "results", SAM2_MODEL_ID.split("/")[-1])
 VIS_DIR = os.path.join(RESULTS_DIR, "visualizations")  # Directory for mask visualizations
 COCO_VAL_IMAGES_URL = "http://images.cocodataset.org/zips/val2017.zip"
 COCO_VAL_ANNOTATIONS_URL = "http://images.cocodataset.org/annotations/annotations_trainval2017.zip"
@@ -52,7 +52,7 @@ def setup_directories():
     os.makedirs(COCO_DIR, exist_ok=True)
     os.makedirs(os.path.join(COCO_DIR, "annotations"), exist_ok=True)
     os.makedirs(RESULTS_DIR, exist_ok=True)
-    os.makedirs(VIS_DIR, exist_ok=True)  # Create visualization directory
+    os.makedirs(VIS_DIR, exist_ok=True)
 
 
 def download_file(url, destination):
@@ -310,6 +310,7 @@ def process_image(image_info, coco_dir, predictor, predictor_tta, coco_data):
     
     # Return metrics
     return {
+        "model_id": SAM2_MODEL_ID,
         "image_id": image_info["id"],
         "file_name": file_name,
         "vis_path": vis_path,
@@ -349,19 +350,22 @@ def visualize_results(results, output_path):
     # Create figure
     fig, axes = plt.subplots(1, 3, figsize=(15, 5))
     
+    # Set model ID
+    model_id = SAM2_MODEL_ID.split("/")[-1]
+    
     # IoU plot
     axes[0].bar(["Baseline", "TTA"], [avg_iou_baseline, avg_iou_tta])
-    axes[0].set_title("Mean IoU")
+    axes[0].set_title(f"Mean IoU - {model_id}")
     axes[0].set_ylim(0, 1)
     
     # Boundary F1 plot
     axes[1].bar(["Baseline", "TTA"], [avg_boundary_f1_baseline, avg_boundary_f1_tta])
-    axes[1].set_title("Mean Boundary F1")
+    axes[1].set_title(f"Mean Boundary F1 - {model_id}")
     axes[1].set_ylim(0, 1)
     
     # Time plot
     axes[2].bar(["Baseline", "TTA"], [avg_time_baseline, avg_time_tta])
-    axes[2].set_title("Mean Inference Time (s)")
+    axes[2].set_title(f"Mean Inference Time (s) - {model_id}")
     
     plt.tight_layout()
     plt.savefig(output_path)
@@ -369,6 +373,7 @@ def visualize_results(results, output_path):
     
     # Print summary
     print("\n===== Benchmark Results =====")
+    print(f"Model ID: {model_id}")
     print(f"Number of images: {len(results)}")
     print(f"Mean IoU - Baseline: {avg_iou_baseline:.4f}, TTA: {avg_iou_tta:.4f}")
     print(f"Mean Boundary F1 - Baseline: {avg_boundary_f1_baseline:.4f}, TTA: {avg_boundary_f1_tta:.4f}")
@@ -410,6 +415,7 @@ def visualize_results(results, output_path):
             print(f"   Visualization: {win['vis_path']}")
     
     return {
+        "model_id": model_id,
         "iou_baseline": avg_iou_baseline,
         "iou_tta": avg_iou_tta,
         "boundary_f1_baseline": avg_boundary_f1_baseline,
