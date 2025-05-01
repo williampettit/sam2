@@ -33,20 +33,21 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from sam2.sam2_image_predictor import SAM2ImagePredictor
 from sam2.build_sam import build_sam2_hf
 
-# Constants
+# Model IDs (for Huggingface)
+SAM2_MODEL_ID = "facebook/sam2-hiera-tiny"
+# SAM2_MODEL_ID = "facebook/sam2-hiera-base-plus"
+SAM2_HUMAN_READABLE_ID = SAM2_MODEL_ID.split("/")[-1]
+
+# Path and URL constants
 DATA_DIR = os.path.expanduser("~/data/coco_benchmark")
 COCO_DIR = os.path.join(DATA_DIR, "coco2017")
-RESULTS_DIR = os.path.join(DATA_DIR, "results", SAM2_MODEL_ID.split("/")[-1])
+RESULTS_DIR = os.path.join(DATA_DIR, "results", SAM2_HUMAN_READABLE_ID)
 VIS_DIR = os.path.join(RESULTS_DIR, "visualizations")  # Directory for mask visualizations
 COCO_VAL_IMAGES_URL = "http://images.cocodataset.org/zips/val2017.zip"
 COCO_VAL_ANNOTATIONS_URL = "http://images.cocodataset.org/annotations/annotations_trainval2017.zip"
 
 # Default CLI argument values
 MAX_IMAGES = 50  # Limit for quick testing, set to None for full dataset
-
-# Model IDs (for Huggingface)
-SAM2_MODEL_ID = "facebook/sam2-hiera-tiny"
-# SAM2_MODEL_ID = "facebook/sam2-hiera-base-plus"
 
 
 def setup_directories():
@@ -114,6 +115,7 @@ def initialize_predictors(device="cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
     
     # Build the model
+    print(f"Building SAM2 model: {SAM2_MODEL_ID}")
     sam2_model = build_sam2_hf(
         model_id=SAM2_MODEL_ID,
         device=device
@@ -212,6 +214,9 @@ def create_side_by_side_visualization(image, gt_mask, mask_baseline, mask_tta):
     cv2.putText(combined_image, "Ground Truth", (w + 10, 30), font, 1, (255, 255, 255), 2, cv2.LINE_AA)
     cv2.putText(combined_image, "Baseline", (2*w + 10, 30), font, 1, (255, 255, 255), 2, cv2.LINE_AA)
     cv2.putText(combined_image, "TTA", (3*w + 10, 30), font, 1, (255, 255, 255), 2, cv2.LINE_AA)
+
+    # Add model ID, centered
+    cv2.putText(combined_image, f"Model: {SAM2_HUMAN_READABLE_ID}", (combined_width // 2, 30), font, 1, (255, 255, 255), 2, cv2.LINE_AA)
     
     return combined_image
 
@@ -348,22 +353,19 @@ def visualize_results(results, output_path):
     # Create figure
     fig, axes = plt.subplots(1, 3, figsize=(15, 5))
     
-    # Set model ID
-    model_id = SAM2_MODEL_ID.split("/")[-1]
-    
     # IoU plot
     axes[0].bar(["Baseline", "TTA"], [avg_iou_baseline, avg_iou_tta])
-    axes[0].set_title(f"Mean IoU - {model_id}")
+    axes[0].set_title(f"Mean IoU - {SAM2_HUMAN_READABLE_ID}")
     axes[0].set_ylim(0, 1)
     
     # Boundary F1 plot
     axes[1].bar(["Baseline", "TTA"], [avg_boundary_f1_baseline, avg_boundary_f1_tta])
-    axes[1].set_title(f"Mean Boundary F1 - {model_id}")
+    axes[1].set_title(f"Mean Boundary F1 - {SAM2_HUMAN_READABLE_ID}")
     axes[1].set_ylim(0, 1)
     
     # Time plot
     axes[2].bar(["Baseline", "TTA"], [avg_time_baseline, avg_time_tta])
-    axes[2].set_title(f"Mean Inference Time (s) - {model_id}")
+    axes[2].set_title(f"Mean Inference Time (s) - {SAM2_HUMAN_READABLE_ID}")
     
     plt.tight_layout()
     plt.savefig(output_path)
@@ -371,7 +373,7 @@ def visualize_results(results, output_path):
     
     # Print summary
     print("\n===== Benchmark Results =====")
-    print(f"Model ID: {model_id}")
+    print(f"Model ID: {SAM2_HUMAN_READABLE_ID}")
     print(f"Number of images: {len(results)}")
     print(f"Mean IoU - Baseline: {avg_iou_baseline:.4f}, TTA: {avg_iou_tta:.4f}")
     print(f"Mean Boundary F1 - Baseline: {avg_boundary_f1_baseline:.4f}, TTA: {avg_boundary_f1_tta:.4f}")
@@ -413,7 +415,7 @@ def visualize_results(results, output_path):
             print(f"   Visualization: {win['vis_path']}")
     
     return {
-        "model_id": model_id,
+        "model_id": SAM2_HUMAN_READABLE_ID,
         "number_of_images": len(results),
         "iou_baseline": avg_iou_baseline,
         "iou_tta": avg_iou_tta,
