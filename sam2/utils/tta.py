@@ -44,8 +44,8 @@ class TTAManager:
             (lambda img: pil_adjust_contrast(img, factor=1.2), lambda m: m),  # contrast
             # (lambda img: pil_adjust_saturation(img, factor=1.2), lambda m: m),  # saturation
             
-            # (lambda img: pil_adjust_brightness(img, factor=0.8), lambda m: m),  # brightness
-            # (lambda img: pil_adjust_contrast(img, factor=0.8), lambda m: m),  # contrast
+            (lambda img: pil_adjust_brightness(img, factor=0.8), lambda m: m),  # brightness
+            (lambda img: pil_adjust_contrast(img, factor=0.8), lambda m: m),  # contrast
             # (lambda img: pil_adjust_saturation(img, factor=0.8), lambda m: m),  # saturation
 
             # (lambda img: pil_adjust_hue(img, factor=0.25), lambda m: m),  # hue
