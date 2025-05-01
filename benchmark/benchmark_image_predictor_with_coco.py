@@ -33,7 +33,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from sam2.sam2_image_predictor import SAM2ImagePredictor
 from sam2.build_sam import build_sam2_hf
 
-# Model IDs (for Huggingface)
+# Model IDs (for Huggingface) - you can override with `--model_id` CLI arg
 SAM2_MODEL_ID = "facebook/sam2-hiera-tiny"
 # SAM2_MODEL_ID = "facebook/sam2-hiera-base-plus"
 SAM2_HUMAN_READABLE_ID = SAM2_MODEL_ID.split("/")[-1]
@@ -434,8 +434,22 @@ def main():
     # Parse arguments
     parser = argparse.ArgumentParser(description="Benchmark SAM2 Image Predictor with and without TTA using COCO dataset")
     parser.add_argument("--max_images", type=int, default=MAX_IMAGES, help="Maximum number of images to process")
+    parser.add_argument(
+        "--model_id", type=str, default=SAM2_MODEL_ID, help="Model ID to use",
+        choices=[
+            "facebook/sam2-hiera-tiny",
+            "facebook/sam2-hiera-small",
+            "facebook/sam2-hiera-base-plus",
+            "facebook/sam2-hiera-large",
+        ]
+    )
     args = parser.parse_args()
     
+    global SAM2_MODEL_ID
+    SAM2_MODEL_ID = args.model_id
+    global SAM2_HUMAN_READABLE_ID
+    SAM2_HUMAN_READABLE_ID = SAM2_MODEL_ID.split("/")[-1]
+
     # Setup directories
     setup_directories()
     
