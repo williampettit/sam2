@@ -3,6 +3,7 @@ import os
 import sys
 import json
 import time
+import itertools
 from typing import List, TypedDict
 
 # Add parent directory to path for importing sam2
@@ -19,6 +20,36 @@ class TTACombination(TypedDict):
     agg_method: TTAAggregationMethod
 
 
+def generate_combinations_for_experiment_3(skip: bool) -> List[TTACombination]:
+    """Generate all combinations of 'decrease' augmentations with 'grayscale' always enabled."""
+    decrease_augs = [
+        "decrease_brightness",
+        "decrease_contrast",
+        "decrease_saturation",
+    ]
+    
+    combos: List[TTACombination] = []
+
+    # iterate over all subsets of decrease augmentations
+    for r in range(len(decrease_augs) + 1):
+        for subset in itertools.combinations(decrease_augs, r):
+            enabled = ["grayscale", *list(subset)]
+            
+            if subset:
+                name = f"Grayscale + {', '.join(subset)}"
+            else:
+                name = "Grayscale only"
+            
+            combos.append({
+                "skip": skip,
+                "name": f"{name}, max aggregation",
+                "enabled_augmentations": enabled,
+                "agg_method": "max",
+            })
+    
+    return combos
+
+
 # Run benchmark_image_predictor_with_coco.py for each combination
 def main():
     # Base arguments
@@ -33,9 +64,6 @@ def main():
         # We try all augmentations with max aggregation and mean aggregation
         #
         # Results:
-        #   We found that max aggregation is much better than mean aggregation.
-        #   We will focus on max aggregation in our experiments from now on.
-        #
         #   Max Aggregation Results:
         #     IoU Improvement: 3.45%
         #     Boundary F1 Improvement: 2.82%
@@ -45,6 +73,10 @@ def main():
         #     IoU Improvement: 0.24%
         #     Boundary F1 Improvement: 0.28%
         #     Time Increase: 673.08%
+        #
+        # Conclusion:
+        #   We found that max aggregation is much better than mean aggregation.
+        #   We will focus on max aggregation in our experiments from now on.
         #
         {
             "skip": True,
@@ -79,8 +111,31 @@ def main():
         # Experiment 2
         # We will try remove some augmentations to decrease inference cost, while maintaining performance.
         #
+        # Results:
+        #   Removing 'decrease' augmentations:
+        #     IoU Improvement: 3.16%
+        #     Boundary F1 Improvement: 2.52%
+        #     Time Increase: 409.96%
+        #  
+        #   Removing 'increase' augmentations:
+        #     IoU Improvement: 3.45%
+        #     Boundary F1 Improvement: 2.55%
+        #     Time Increase: 380.84%
+        #  
+        #   Removing 'decrease' and 'increase' augmentations (leaving only 'grayscale' enabled):
+        #     IoU Improvement: 3.10%
+        #     Boundary F1 Improvement: 2.08%
+        #     Time Increase: 125.54%
+        #
+        # Conclusion:
+        #   Trivially, all combinations where we removed augmentations resulted in less inference cost.
+        #   Also, 'grayscale' is a cheap way to get good metrics.
+        #   Removing 'increase' augmentations gave us better metrics than removing 'decrease' augmentations.
+        #   We will now stick with just 'decrease' and 'grayscale' augmentations.
+        #   We will do some experiments to see how many of the 'decrease' ops we can disable without hurting metrics.
+        #
         {
-            "skip": False,
+            "skip": True,
             "name": "Remove 'decrease' augmentations, use max aggregation",
             "enabled_augmentations": [
                 "grayscale",
@@ -94,7 +149,7 @@ def main():
             "agg_method": "max",
         },
         {
-            "skip": False,
+            "skip": True,
             "name": "Remove 'increase' augmentations, use max aggregation",
             "enabled_augmentations": [
                 "grayscale",
@@ -108,7 +163,7 @@ def main():
             "agg_method": "max",
         },
         {
-            "skip": False,
+            "skip": True,
             "name": "Remove 'increase' and 'decrease' augmentations, use max aggregation",
             "enabled_augmentations": [
                 "grayscale",
@@ -121,6 +176,18 @@ def main():
             ],
             "agg_method": "max",
         },
+
+        #
+        # Experiment 3
+        # Following our conclusion from Experiment 2, we will try to disable some of the 'decrease' augmentations.
+        # We basically want to see which of the 'decrease' augmentations are better than others.
+        # Depending on our results, we want to be able to conclude that we only need 1-2 of them in order to achieve good metrics.
+        # In turn, this will allow us to save on inference time.
+        #
+        # Results:
+        #   ...
+        #
+        *generate_combinations_for_experiment_3(skip=False),
     ]
 
     # Try all combinations
