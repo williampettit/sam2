@@ -26,6 +26,8 @@ class SAM2ImagePredictor:
         mask_threshold=0.0,
         max_hole_area=0.0,
         max_sprinkle_area=0.0,
+        tta_enabled_augmentations: Optional[List[TTAAugmentationName]] = None,
+        tta_agg_method: Optional[AggregationMethod] = None,
         **kwargs,
     ) -> None:
         """
@@ -50,7 +52,11 @@ class SAM2ImagePredictor:
             max_sprinkle_area=max_sprinkle_area,
         )
         # Initialize TTA manager for test-time augmentations
-        self._tta_manager = TTAManager(threshold=mask_threshold)
+        self._tta_manager = TTAManager(
+            threshold=mask_threshold,
+            enabled_augmentations=tta_enabled_augmentations,
+            agg_method=tta_agg_method,
+        )
 
         # Predictor state
         self._is_image_set = False
