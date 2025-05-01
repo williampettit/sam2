@@ -28,8 +28,8 @@ class TTAManager:
         # PIL-based TTA ops for image predictor
         self.pil_augmentations: List[Tuple[Callable, Callable]] = [
             (lambda img: img, lambda m: m),  # original
-            # (ImageOps.mirror, lambda m: np.flip(m, axis=-1)),  # horizontal flip
-            # (ImageOps.flip, lambda m: np.flip(m, axis=-2)),  # vertical flip
+            (ImageOps.mirror, lambda m: np.flip(m, axis=-1)),  # horizontal flip
+            (ImageOps.flip, lambda m: np.flip(m, axis=-2)),  # vertical flip
             # (lambda img: img.rotate(90, expand=True), lambda m: np.rot90(m, k=3, axes=(1,2))),  # rotate 90
             # (lambda img: img.rotate(270, expand=True), lambda m: np.rot90(m, k=1, axes=(1,2))),  # rotate 270
         ]
