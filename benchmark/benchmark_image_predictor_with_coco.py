@@ -207,6 +207,7 @@ def process_image(image_info, coco_dir, predictor, predictor_tta, coco_data):
     start_time = time.time()
     predictor_tta.set_image(image)
     masks_tta, _, _ = predictor_tta.predict_with_tta(
+        image,
         point_coords=None,
         point_labels=None,
         box=box,
