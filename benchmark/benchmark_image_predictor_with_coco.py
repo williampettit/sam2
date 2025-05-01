@@ -5,6 +5,7 @@ This script:
 1. Downloads MS COCO 2017 validation dataset and annotations
 2. Runs SAM2 Image Predictor with and without TTA
 3. Computes evaluation metrics and saves results
+4. Saves visualization images of mask predictions with and without TTA
 """
 
 import os
@@ -21,6 +22,7 @@ import urllib.request
 import zipfile
 import argparse
 from pathlib import Path
+import cv2
 
 # Add parent directory to path for importing sam2
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -33,6 +35,7 @@ from sam2.build_sam import build_sam2_hf
 DATA_DIR = os.path.expanduser("~/data/coco_benchmark")
 COCO_DIR = os.path.join(DATA_DIR, "coco2017")
 RESULTS_DIR = os.path.join(DATA_DIR, "results")
+VIS_DIR = os.path.join(RESULTS_DIR, "visualizations")  # Directory for mask visualizations
 COCO_VAL_IMAGES_URL = "http://images.cocodataset.org/zips/val2017.zip"
 COCO_VAL_ANNOTATIONS_URL = "http://images.cocodataset.org/annotations/annotations_trainval2017.zip"
 MAX_IMAGES = 50  # Limit for quick testing, set to None for full dataset
@@ -43,6 +46,7 @@ def setup_directories():
     os.makedirs(COCO_DIR, exist_ok=True)
     os.makedirs(os.path.join(COCO_DIR, "annotations"), exist_ok=True)
     os.makedirs(RESULTS_DIR, exist_ok=True)
+    os.makedirs(VIS_DIR, exist_ok=True)  # Create visualization directory
 
 
 def download_file(url, destination):
@@ -148,6 +152,64 @@ def calculate_boundary_f1(mask1, mask2, tolerance=2):
     return boundary_f1
 
 
+def create_side_by_side_visualization(image, gt_mask, mask_baseline, mask_tta):
+    """Create a side-by-side visualization of ground truth and predicted masks."""
+    # Convert masks to RGB visualizations
+    h, w = image.shape[:2]
+    
+    # Create colored overlays for masks
+    gt_overlay = np.zeros((h, w, 3), dtype=np.uint8)
+    gt_overlay[gt_mask > 0] = [0, 255, 0]  # Green for ground truth
+    
+    baseline_overlay = np.zeros((h, w, 3), dtype=np.uint8)
+    baseline_overlay[mask_baseline > 0] = [0, 0, 255]  # Blue for baseline
+    
+    tta_overlay = np.zeros((h, w, 3), dtype=np.uint8)
+    tta_overlay[mask_tta > 0] = [255, 0, 0]  # Red for TTA
+    
+    # Blend the overlays with the original image
+    alpha = 0.5
+    gt_blend = cv2.addWeighted(image.copy(), 1, gt_overlay, alpha, 0)
+    baseline_blend = cv2.addWeighted(image.copy(), 1, baseline_overlay, alpha, 0)
+    tta_blend = cv2.addWeighted(image.copy(), 1, tta_overlay, alpha, 0)
+    
+    # Draw contours for better visualization
+    gt_contours, _ = cv2.findContours((gt_mask > 0).astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    baseline_contours, _ = cv2.findContours((mask_baseline > 0).astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    tta_contours, _ = cv2.findContours((mask_tta > 0).astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    
+    cv2.drawContours(gt_blend, gt_contours, -1, (0, 255, 0), 2)
+    cv2.drawContours(baseline_blend, baseline_contours, -1, (0, 0, 255), 2)
+    cv2.drawContours(tta_blend, tta_contours, -1, (255, 0, 0), 2)
+    
+    # Create the side-by-side comparison
+    # Format: [Original | GT | Baseline | TTA]
+    combined_width = image.shape[1] * 4
+    combined_height = image.shape[0]
+    combined_image = np.zeros((combined_height, combined_width, 3), dtype=np.uint8)
+    
+    # Original image
+    combined_image[:, :w] = image
+    
+    # GT mask
+    combined_image[:, w:2*w] = gt_blend
+    
+    # Baseline mask
+    combined_image[:, 2*w:3*w] = baseline_blend
+    
+    # TTA mask
+    combined_image[:, 3*w:] = tta_blend
+    
+    # Add labels
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    cv2.putText(combined_image, "Original", (10, 30), font, 1, (255, 255, 255), 2, cv2.LINE_AA)
+    cv2.putText(combined_image, "Ground Truth", (w + 10, 30), font, 1, (255, 255, 255), 2, cv2.LINE_AA)
+    cv2.putText(combined_image, "Baseline", (2*w + 10, 30), font, 1, (255, 255, 255), 2, cv2.LINE_AA)
+    cv2.putText(combined_image, "TTA", (3*w + 10, 30), font, 1, (255, 255, 255), 2, cv2.LINE_AA)
+    
+    return combined_image
+
+
 def process_image(image_info, coco_dir, predictor, predictor_tta, coco_data):
     """Process a single image with both predictors and return metrics."""
     # Get image path - COCO uses 12-digit zero-padded image IDs
@@ -226,10 +288,25 @@ def process_image(image_info, coco_dir, predictor, predictor_tta, coco_data):
     boundary_f1_baseline = calculate_boundary_f1(gt_mask, mask)
     boundary_f1_tta = calculate_boundary_f1(gt_mask, mask_tta)
     
+    # Create and save visualization
+    # Make sure image is in uint8 RGB format
+    if image.dtype != np.uint8:
+        image = (image * 255).astype(np.uint8)
+    if image.shape[2] == 4:  # If RGBA, convert to RGB
+        image = image[:, :, :3]
+        
+    # Create side-by-side visualization
+    vis_image = create_side_by_side_visualization(image, gt_mask, mask, mask_tta)
+    
+    # Save visualization
+    vis_path = os.path.join(VIS_DIR, f"coco_{image_info['id']:012d}.jpg")
+    cv2.imwrite(vis_path, vis_image)
+    
     # Return metrics
     return {
         "image_id": image_info["id"],
-        "file_name": image_info["file_name"],
+        "file_name": file_name,
+        "vis_path": vis_path,
         "metrics": {
             "baseline": {
                 "iou": iou_baseline,
@@ -345,6 +422,7 @@ def main():
     with open(results_path, 'w') as f:
         json.dump(results, f)
     print(f"Saved results to {results_path}")
+    print(f"Saved {len(results)} visualization images to {VIS_DIR}/")
     
     # Visualize results
     plot_path = os.path.join(RESULTS_DIR, "benchmark_plot.png")
