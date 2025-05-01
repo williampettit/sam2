@@ -435,6 +435,7 @@ def visualize_results(results, output_path):
     
     return {
         "model_id": args.model_id,
+        "seed": args.seed,
         "number_of_images": len(results),
         "iou_baseline": avg_iou_baseline,
         "iou_tta": avg_iou_tta,
