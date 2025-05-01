@@ -23,6 +23,8 @@ import zipfile
 import argparse
 from pathlib import Path
 import cv2
+from pycocotools import mask as mask_utils
+from scipy.ndimage import binary_dilation, binary_erosion, distance_transform_edt
 
 # Add parent directory to path for importing sam2
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -135,10 +137,8 @@ def calculate_iou(mask1, mask2):
 
 def calculate_boundary_f1(mask1, mask2, tolerance=2):
     """Calculate boundary F1 score with tolerance."""
-    from scipy.ndimage import distance_transform_edt
     
     # Get boundaries (simple approach: difference between dilated and eroded)
-    from scipy.ndimage import binary_dilation, binary_erosion
     boundary1 = binary_dilation(mask1) & ~binary_erosion(mask1)
     boundary2 = binary_dilation(mask2) & ~binary_erosion(mask2)
     
@@ -241,7 +241,6 @@ def process_image(image_info, coco_dir, predictor, predictor_tta, coco_data):
     annotation = annotations[0]
     
     # Decode segmentation mask
-    from pycocotools import mask as mask_utils
     if isinstance(annotation["segmentation"], dict):  # RLE format
         gt_mask = mask_utils.decode(annotation["segmentation"])
     else:  # Polygon format
@@ -256,7 +255,6 @@ def process_image(image_info, coco_dir, predictor, predictor_tta, coco_data):
         box = np.array([x, y, x + width, y + height])
     else:
         # If no bbox, create one from the mask
-        from pycocotools import mask as mask_utils
         bbox = mask_utils.toBbox(annotation["segmentation"])
         x, y, width, height = bbox
         box = np.array([x, y, x + width, y + height])
