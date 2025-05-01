@@ -371,6 +371,35 @@ def visualize_results(results, output_path):
     print(f"Boundary F1 Improvement: {(avg_boundary_f1_tta - avg_boundary_f1_baseline) / avg_boundary_f1_baseline * 100:.2f}%")
     print(f"Time Increase: {(avg_time_tta - avg_time_baseline) / avg_time_baseline * 100:.2f}%")
     
+    # Find images where TTA outperformed baseline
+    tta_wins = []
+    for r in results:
+        # Check if TTA outperformed baseline on IoU or boundary F1
+        if (r["metrics"]["tta"]["iou"] > r["metrics"]["baseline"]["iou"] or 
+            r["metrics"]["tta"]["boundary_f1"] > r["metrics"]["baseline"]["boundary_f1"]):
+            tta_wins.append({
+                "image_id": r["image_id"],
+                "vis_path": r["vis_path"],
+                "iou_diff": r["metrics"]["tta"]["iou"] - r["metrics"]["baseline"]["iou"],
+                "boundary_f1_diff": r["metrics"]["tta"]["boundary_f1"] - r["metrics"]["baseline"]["boundary_f1"],
+                "metrics": r["metrics"]
+            })
+    
+    # Sort by IoU improvement (descending)
+    tta_wins.sort(key=lambda x: x["iou_diff"], reverse=True)
+    
+    # Print list of images where TTA outperformed baseline
+    print("\n===== Images Where TTA Outperformed Baseline =====")
+    print(f"Found {len(tta_wins)} images where TTA performed better ({len(tta_wins)/len(results)*100:.1f}% of total)")
+    
+    if len(tta_wins) > 0:
+        print("\nTop 10 improvements (sorted by IoU difference):")
+        for i, win in enumerate(tta_wins[:10]):
+            print(f"\n{i+1}. Image ID: {win['image_id']}")
+            print(f"   IoU: {win['metrics']['baseline']['iou']:.4f} → {win['metrics']['tta']['iou']:.4f} (+{win['iou_diff']:.4f})")
+            print(f"   Boundary F1: {win['metrics']['baseline']['boundary_f1']:.4f} → {win['metrics']['tta']['boundary_f1']:.4f} (+{win['boundary_f1_diff']:.4f})")
+            print(f"   Visualization: {win['vis_path']}")
+    
     return {
         "iou_baseline": avg_iou_baseline,
         "iou_tta": avg_iou_tta,
@@ -380,7 +409,8 @@ def visualize_results(results, output_path):
         "time_tta": avg_time_tta,
         "iou_improvement": (avg_iou_tta - avg_iou_baseline) / avg_iou_baseline * 100,
         "boundary_f1_improvement": (avg_boundary_f1_tta - avg_boundary_f1_baseline) / avg_boundary_f1_baseline * 100,
-        "time_increase": (avg_time_tta - avg_time_baseline) / avg_time_baseline * 100
+        "time_increase": (avg_time_tta - avg_time_baseline) / avg_time_baseline * 100,
+        "tta_wins": tta_wins
     }
 
 
