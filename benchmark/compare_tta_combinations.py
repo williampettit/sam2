@@ -71,7 +71,7 @@ def main():
                 "--max_images", str(max_images),
                 "--model_size", model_size,
                 "--seed", str(seed),
-                "--tta_enabled_augmentations", ",".join(combination["enabled_augmentations"]),
+                "--tta_enabled_augmentations", " ".join(combination["enabled_augmentations"]),
                 "--tta_agg_method", combination["agg_method"],
             ]
         )

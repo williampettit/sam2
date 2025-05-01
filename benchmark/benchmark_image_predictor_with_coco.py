@@ -71,9 +71,9 @@ def parse_args():
     
     parser.add_argument(
         "--tta_enabled_augmentations",
-        type=lambda arg: arg.split(","),
+        nargs="+",
         default=None,
-        help="Comma-separated list of TTA augmentations to enable",
+        help="Space-separated list of TTA augmentations to enable",
         choices=list(get_args(TTAAugmentationName)),
     )
 
