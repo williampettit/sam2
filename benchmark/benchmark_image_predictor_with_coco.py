@@ -27,7 +27,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # Import SAM2 components
 from sam2.sam2_image_predictor import SAM2ImagePredictor
-from sam2.build_sam2 import build_sam2_hf
+from sam2.build_sam import build_sam2_hf
 
 # Constants
 DATA_DIR = os.path.expanduser("~/data/coco_benchmark")
