@@ -5,6 +5,8 @@
 # LICENSE file in the root directory of this source tree.
 
 import warnings
+import math
+import copy
 from collections import OrderedDict
 
 import torch
@@ -618,6 +620,24 @@ class SAM2VideoPredictor(SAM2Base):
                     device = inference_state["device"]
                     frame_image = inference_state["images"][frame_idx].to(device).float().unsqueeze(0)
                     
+                    # For TTA in video, we need a different approach than for images
+                    # We'll run the regular inference first to get the base prediction
+                    base_out, base_pred_masks = self._run_single_frame_inference(
+                        inference_state=inference_state,
+                        output_dict=obj_output_dict,
+                        frame_idx=frame_idx,
+                        batch_size=1,
+                        is_init_cond_frame=False,
+                        point_inputs=None,
+                        mask_inputs=None,
+                        reverse=reverse,
+                        run_mem_encoder=False,  # Important: don't update memory yet
+                    )
+                    
+                    # Store the original memory state before TTA
+                    # We'll restore this after all augmentations
+                    original_output_dict = copy.deepcopy(obj_output_dict)
+                    
                     # Apply TTA to the current frame
                     # Convert tensor to PIL image for TTA
                     frame_np = frame_image.squeeze(0).permute(1, 2, 0).cpu().numpy()
@@ -627,8 +647,17 @@ class SAM2VideoPredictor(SAM2Base):
                     # Collect masks from all augmentations
                     mask_list = []
                     
+                    # First, add the base prediction to the mask list
+                    base_mask_np = base_pred_masks.squeeze(0).float().cpu().numpy()
+                    mask_list.append(base_mask_np)
+                    
                     # Process each augmentation
-                    for aug_fn, deaug_fn in self._tta_manager.pil_augmentations:
+                    for i, (aug_fn, deaug_fn) in enumerate(self._tta_manager.pil_augmentations):
+                        # Skip the identity augmentation (already handled with base_pred_masks)
+                        # Identity augmentation is typically the first one in the list
+                        if i == 0:  # Assuming first augmentation is identity
+                            continue
+                            
                         # Apply augmentation to frame
                         aug_frame = aug_fn(pil_frame)
                         # Convert back to tensor
@@ -641,16 +670,18 @@ class SAM2VideoPredictor(SAM2Base):
                         inference_state["images"][frame_idx] = aug_tensor.squeeze(0)
                         
                         # Run inference with augmented image
+                        # Important: use a copy of the original output_dict to avoid memory contamination
+                        aug_output_dict = copy.deepcopy(original_output_dict)
                         aug_out, aug_pred_masks = self._run_single_frame_inference(
                             inference_state=inference_state,
-                            output_dict=obj_output_dict,
+                            output_dict=aug_output_dict,
                             frame_idx=frame_idx,
-                            batch_size=1,  # run on the slice of a single object
+                            batch_size=1,
                             is_init_cond_frame=False,
                             point_inputs=None,
                             mask_inputs=None,
                             reverse=reverse,
-                            run_mem_encoder=True,
+                            run_mem_encoder=False,  # Don't update memory with augmented results
                         )
                         
                         # Convert to numpy for de-augmentation
@@ -667,18 +698,18 @@ class SAM2VideoPredictor(SAM2Base):
                     # Convert back to tensor
                     aggregated_tensor = torch.from_numpy(aggregated_mask).to(device).unsqueeze(0)
                     
-                    # Use the aggregated mask for the final output
+                    # Now run the final inference with the aggregated mask
+                    # This will update the memory with the aggregated result
                     current_out, pred_masks = self._run_single_frame_inference(
                         inference_state=inference_state,
                         output_dict=obj_output_dict,
                         frame_idx=frame_idx,
-                        batch_size=1,  # run on the slice of a single object
+                        batch_size=1,
                         is_init_cond_frame=False,
                         point_inputs=None,
                         mask_inputs=None,
                         reverse=reverse,
-                        run_mem_encoder=True,
-                        # Use the aggregated mask from TTA
+                        run_mem_encoder=True,  # Now update memory with the final result
                         override_pred_masks=aggregated_tensor
                     )
                     obj_output_dict[storage_key][frame_idx] = current_out
