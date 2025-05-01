@@ -71,10 +71,9 @@ def parse_args():
     
     parser.add_argument(
         "--tta_enabled_augmentations",
-        nargs="+",
+        type=lambda s: s.split(" "),
         default=None,
-        help="Space-separated list of TTA augmentations to enable",
-        choices=list(get_args(TTAAugmentationName)),
+        help=f"Space-separated list of TTA augmentations to enable. Valid values: {', '.join(list(get_args(TTAAugmentationName)))}",
     )
 
     parser.add_argument(
@@ -86,6 +85,13 @@ def parse_args():
     )
 
     args = parser.parse_args()
+
+    # Validate TTA augmentations
+    if args.tta_enabled_augmentations:
+        valid = set(get_args(TTAAugmentationName))
+        bad = [a for a in args.tta_enabled_augmentations if a not in valid]
+        if bad:
+            parser.error(f"Unknown augmentations: {bad}")
 
     # Store formatted model ID
     args.model_id = f"facebook/sam2-hiera-{args.model_size}"
