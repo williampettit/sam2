@@ -67,7 +67,7 @@ def main():
         result = subprocess.run(
             [
                 "python",
-                "benchmark_image_predictor_with_coco.py",
+                os.path.join(os.path.dirname(__file__), "benchmark_image_predictor_with_coco.py"),
                 "--max_images", str(max_images),
                 "--model_size", model_size,
                 "--seed", str(seed),
@@ -81,7 +81,8 @@ def main():
 
         results.append({
             "combination_data": combination,
-            "raw_result": result,
+            "raw_result_output": result.stdout,
+            "raw_result_returncode": result.returncode,
         })
 
     # Save results
