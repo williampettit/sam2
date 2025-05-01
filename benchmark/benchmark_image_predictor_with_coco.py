@@ -33,11 +33,6 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from sam2.sam2_image_predictor import SAM2ImagePredictor
 from sam2.build_sam import build_sam2_hf
 
-# Model IDs (for Huggingface) - you can override with `--model_id` CLI arg
-SAM2_MODEL_ID = "facebook/sam2-hiera-tiny"
-# SAM2_MODEL_ID = "facebook/sam2-hiera-base-plus"
-SAM2_HUMAN_READABLE_ID = SAM2_MODEL_ID.split("/")[-1]
-
 # Path and URL constants
 DATA_DIR = os.path.expanduser("~/data/coco_benchmark")
 COCO_DIR = os.path.join(DATA_DIR, "coco2017")
@@ -45,9 +40,6 @@ RESULTS_DIR = os.path.join(DATA_DIR, "results", SAM2_HUMAN_READABLE_ID)
 VIS_DIR = os.path.join(RESULTS_DIR, "visualizations")  # Directory for mask visualizations
 COCO_VAL_IMAGES_URL = "http://images.cocodataset.org/zips/val2017.zip"
 COCO_VAL_ANNOTATIONS_URL = "http://images.cocodataset.org/annotations/annotations_trainval2017.zip"
-
-# Default CLI argument values
-MAX_IMAGES = 50  # Limit for quick testing, set to None for full dataset
 
 
 def setup_directories():
@@ -110,14 +102,14 @@ def load_coco_dataset():
     return coco_data
 
 
-def initialize_predictors(device="cuda" if torch.cuda.is_available() else "cpu"):
+def initialize_predictors(model_id, device="cuda" if torch.cuda.is_available() else "cpu"):
     """Initialize SAM2 Image Predictors with and without TTA."""
     print(f"Using device: {device}")
     
     # Build the model
-    print(f"Building SAM2 model: {SAM2_MODEL_ID}")
+    print(f"Building SAM2 model: {model_id}")
     sam2_model = build_sam2_hf(
-        model_id=SAM2_MODEL_ID,
+        model_id=model_id,
         device=device
     )
     
@@ -160,7 +152,7 @@ def calculate_boundary_f1(mask1, mask2, tolerance=2):
     return boundary_f1
 
 
-def create_side_by_side_visualization(image, gt_mask, mask_baseline, mask_tta):
+def create_side_by_side_visualization(image, gt_mask, mask_baseline, mask_tta, model_id):
     """Create a side-by-side visualization of ground truth and predicted masks."""
     # Convert masks to RGB visualizations
     h, w = image.shape[:2]
@@ -216,12 +208,12 @@ def create_side_by_side_visualization(image, gt_mask, mask_baseline, mask_tta):
     cv2.putText(combined_image, "TTA", (3*w + 10, 30), font, 1, (255, 255, 255), 2, cv2.LINE_AA)
 
     # Add model ID, centered
-    cv2.putText(combined_image, f"Model: {SAM2_HUMAN_READABLE_ID}", (combined_width // 2, 30), font, 1, (255, 255, 255), 2, cv2.LINE_AA)
+    cv2.putText(combined_image, f"Model: {model_id}", (combined_width // 2, 30), font, 1, (255, 255, 255), 2, cv2.LINE_AA)
     
     return combined_image
 
 
-def process_image(image_info, coco_dir, predictor, predictor_tta, coco_data):
+def process_image(image_info, coco_dir, predictor, predictor_tta, coco_data, model_id):
     """Process a single image with both predictors and return metrics."""
     # Get image path - COCO uses 12-digit zero-padded image IDs
     file_name = f"{image_info['id']:012d}.jpg"
@@ -305,7 +297,7 @@ def process_image(image_info, coco_dir, predictor, predictor_tta, coco_data):
         image = image[:, :, :3]
         
     # Create side-by-side visualization
-    vis_image = create_side_by_side_visualization(image, gt_mask, mask, mask_tta)
+    vis_image = create_side_by_side_visualization(image, gt_mask, mask, mask_tta, model_id)
     
     # Save visualization
     vis_path = os.path.join(VIS_DIR, f"coco_{image_info['id']:012d}.jpg")
@@ -313,7 +305,7 @@ def process_image(image_info, coco_dir, predictor, predictor_tta, coco_data):
     
     # Return metrics
     return {
-        "model_id": SAM2_MODEL_ID,
+        "model_id": model_id,
         "image_id": image_info["id"],
         "file_name": file_name,
         "vis_path": vis_path,
@@ -332,7 +324,7 @@ def process_image(image_info, coco_dir, predictor, predictor_tta, coco_data):
     }
 
 
-def visualize_results(results, output_path):
+def visualize_results(results, output_path, model_id):
     """Visualize the benchmark results."""
     # Extract metrics
     iou_baseline = [r["metrics"]["baseline"]["iou"] for r in results]
@@ -415,7 +407,7 @@ def visualize_results(results, output_path):
             print(f"   Visualization: {win['vis_path']}")
     
     return {
-        "model_id": SAM2_HUMAN_READABLE_ID,
+        "model_id": model_id,
         "number_of_images": len(results),
         "iou_baseline": avg_iou_baseline,
         "iou_tta": avg_iou_tta,
@@ -433,9 +425,12 @@ def visualize_results(results, output_path):
 def main():
     # Parse arguments
     parser = argparse.ArgumentParser(description="Benchmark SAM2 Image Predictor with and without TTA using COCO dataset")
-    parser.add_argument("--max_images", type=int, default=MAX_IMAGES, help="Maximum number of images to process")
+    parser.add_argument("--max_images", type=int, default=50, help="Maximum number of images to process")
     parser.add_argument(
-        "--model_id", type=str, default=SAM2_MODEL_ID, help="Model ID to use",
+        "--model_id",
+        type=str,
+        help="Model ID to use",
+        default="facebook/sam2-hiera-tiny",
         choices=[
             "facebook/sam2-hiera-tiny",
             "facebook/sam2-hiera-small",
@@ -445,11 +440,6 @@ def main():
     )
     args = parser.parse_args()
     
-    global SAM2_MODEL_ID
-    SAM2_MODEL_ID = args.model_id
-    global SAM2_HUMAN_READABLE_ID
-    SAM2_HUMAN_READABLE_ID = SAM2_MODEL_ID.split("/")[-1]
-
     # Setup directories
     setup_directories()
     
@@ -461,7 +451,7 @@ def main():
     print(f"Loaded COCO validation set with {len(coco_data['images'])} images and {len(coco_data['annotations'])} annotations")
     
     # Initialize predictors
-    predictor, predictor_tta = initialize_predictors()
+    predictor, predictor_tta = initialize_predictors(args.model_id)
     
     # Sample some images for evaluation
     images = coco_data["images"]
@@ -473,7 +463,7 @@ def main():
     results = []
     
     for image_info in tqdm(images, desc="Processing images"):
-        result = process_image(image_info, COCO_DIR, predictor, predictor_tta, coco_data)
+        result = process_image(image_info, COCO_DIR, predictor, predictor_tta, coco_data, args.model_id)
         if result is not None:
             results.append(result)
     
@@ -486,7 +476,7 @@ def main():
     
     # Visualize results
     plot_path = os.path.join(RESULTS_DIR, "benchmark_plot.png")
-    summary = visualize_results(results, plot_path)
+    summary = visualize_results(results, plot_path, args.model_id)
     print(f"Saved plot to {plot_path}")
     
     # Save summary
