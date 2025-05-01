@@ -484,7 +484,7 @@ def main():
     
     # Visualize results
     plot_path = os.path.join(RESULTS_DIR, "benchmark_plot.png")
-    summary = visualize_results(results, plot_path, args.model_id)
+    summary = visualize_results(results, plot_path)
     print(f"Saved plot to {plot_path}")
     
     # Save summary
