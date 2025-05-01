@@ -393,8 +393,11 @@ def visualize_results(results, output_path):
     print(f"Found {len(tta_wins)} images where TTA performed better ({len(tta_wins)/len(results)*100:.1f}% of total)")
     
     if len(tta_wins) > 0:
-        print("\nTop 10 improvements (sorted by IoU difference):")
-        for i, win in enumerate(tta_wins[:10]):
+        top_n = 25
+        top_n_wins = tta_wins[:top_n]
+        
+        print(f"\nTop {len(top_n_wins)} improvements (sorted by IoU difference):")
+        for i, win in enumerate(top_n_wins):
             print(f"\n{i+1}. Image ID: {win['image_id']}")
             print(f"   IoU: {win['metrics']['baseline']['iou']:.4f} → {win['metrics']['tta']['iou']:.4f} (+{win['iou_diff']:.4f})")
             print(f"   Boundary F1: {win['metrics']['baseline']['boundary_f1']:.4f} → {win['metrics']['tta']['boundary_f1']:.4f} (+{win['boundary_f1_diff']:.4f})")
