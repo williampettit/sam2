@@ -60,19 +60,30 @@ type TTAAugmentationPair = Tuple[TTAAugmentImageFn, TTAAugmentMaskFn]
 
 
 TTA_AUGMENTATION_MAP: Dict[TTAAugmentationName, TTAAugmentationPair] = {
+    #
+    # Geometric transforms
+    #
+
     "horizontal_flip": (ImageOps.mirror, lambda m: np.flip(m, axis=-1)),
     "vertical_flip": (ImageOps.flip, lambda m: np.flip(m, axis=-2)),
     "rotate_90": (lambda img: img.rotate(90, expand=True), lambda m: np.rot90(m, k=3, axes=(1,2))),
     "rotate_270": (lambda img: img.rotate(270, expand=True), lambda m: np.rot90(m, k=1, axes=(1,2))),
+    
+    #
+    # Photometric/color transforms
+    #
+
     "grayscale": (pil_grayscale, lambda m: m),
-    "increase_brightness": (pil_adjust_brightness, lambda m: m),
-    "increase_contrast": (pil_adjust_contrast, lambda m: m),
-    "increase_saturation": (pil_adjust_saturation, lambda m: m),
-    "increase_hue": (pil_adjust_hue, lambda m: m),
-    "decrease_brightness": (pil_adjust_brightness, lambda m: m),
-    "decrease_contrast": (pil_adjust_contrast, lambda m: m),
-    "decrease_saturation": (pil_adjust_saturation, lambda m: m),
-    "decrease_hue": (pil_adjust_hue, lambda m: m),
+
+    "increase_brightness": (lambda img: pil_adjust_brightness(img, factor=1.2), lambda m: m),
+    "increase_contrast": (lambda img: pil_adjust_contrast(img, factor=1.2), lambda m: m),
+    "increase_saturation": (lambda img: pil_adjust_saturation(img, factor=1.2), lambda m: m),
+    "increase_hue": (lambda img: pil_adjust_hue(img, factor=0.1), lambda m: m),
+    
+    "decrease_brightness": (lambda img: pil_adjust_brightness(img, factor=0.8), lambda m: m),
+    "decrease_contrast": (lambda img: pil_adjust_contrast(img, factor=0.8), lambda m: m),
+    "decrease_saturation": (lambda img: pil_adjust_saturation(img, factor=0.8), lambda m: m),
+    "decrease_hue": (lambda img: pil_adjust_hue(img, factor=-0.1), lambda m: m),
 }
 
 
