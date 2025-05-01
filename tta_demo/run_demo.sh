@@ -1,0 +1,1 @@
+python tta_demo/main.py --images-dir ./tta_demo/images --model-size tiny --tta-enabled-augmentations "grayscale decrease_contrast" --tta-agg-method max --output ./demo_result.png
