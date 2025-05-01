@@ -14,6 +14,7 @@ from sam2.utils.tta import TTAAggregationMethod, TTAAugmentationName
 
 class TTACombination(TypedDict):
     name: str
+    skip: bool
     enabled_augmentations: List[TTAAugmentationName]
     agg_method: TTAAggregationMethod
 
@@ -27,7 +28,26 @@ def main():
 
     # TTA combinations to try
     combinations_to_try: List[TTACombination] = [
+        #
+        # Experiment 1
+        # We try all augmentations with max aggregation and mean aggregation
+        #
+        # Results:
+        #   We found that max aggregation is much better than mean aggregation.
+        #   We will focus on max aggregation in our experiments from now on.
+        #
+        #   Max Aggregation Results:
+        #     IoU Improvement: 3.45%
+        #     Boundary F1 Improvement: 2.82%
+        #     Time Increase: 635.44%
+        #
+        #   Mean Aggregation Results:
+        #     IoU Improvement: 0.24%
+        #     Boundary F1 Improvement: 0.28%
+        #     Time Increase: 673.08%
+        #
         {
+            "skip": True,
             "name": "All augmentations with max aggregation",
             "enabled_augmentations": [
                 "grayscale",
@@ -40,8 +60,8 @@ def main():
             ],
             "agg_method": "max",
         },
-
         {
+            "skip": True,
             "name": "All augmentations with mean aggregation",
             "enabled_augmentations": [
                 "grayscale",
@@ -54,11 +74,65 @@ def main():
             ],
             "agg_method": "mean",
         },
+
+        #
+        # Experiment 2
+        # We will try remove some augmentations to decrease inference cost, while maintaining performance.
+        #
+        {
+            "skip": False,
+            "name": "Remove 'decrease' augmentations, use max aggregation",
+            "enabled_augmentations": [
+                "grayscale",
+                "increase_brightness",
+                "increase_contrast",
+                "increase_saturation",
+                # "decrease_brightness",
+                # "decrease_contrast",
+                # "decrease_saturation",
+            ],
+            "agg_method": "max",
+        },
+        {
+            "skip": False,
+            "name": "Remove 'increase' augmentations, use max aggregation",
+            "enabled_augmentations": [
+                "grayscale",
+                # "increase_brightness",
+                # "increase_contrast",
+                # "increase_saturation",
+                "decrease_brightness",
+                "decrease_contrast",
+                "decrease_saturation",
+            ],
+            "agg_method": "max",
+        },
+        {
+            "skip": False,
+            "name": "Remove 'increase' and 'decrease' augmentations, use max aggregation",
+            "enabled_augmentations": [
+                "grayscale",
+                # "increase_brightness",
+                # "increase_contrast",
+                # "increase_saturation",
+                # "decrease_brightness",
+                # "decrease_contrast",
+                # "decrease_saturation",
+            ],
+            "agg_method": "max",
+        },
     ]
 
     # Try all combinations
     results = []
     for combination in combinations_to_try:
+        if combination["skip"]:
+            print("=" * 80)
+            print("Skipping combination:")
+            print(combination["name"])
+            print("=" * 80)
+            continue
+
         print("=" * 80)
         print("Trying combination:")
         print(combination["name"])
