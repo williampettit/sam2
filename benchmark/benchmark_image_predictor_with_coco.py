@@ -416,6 +416,7 @@ def visualize_results(results, output_path):
     
     return {
         "model_id": model_id,
+        "number_of_images": len(results),
         "iou_baseline": avg_iou_baseline,
         "iou_tta": avg_iou_tta,
         "boundary_f1_baseline": avg_boundary_f1_baseline,
