@@ -47,6 +47,31 @@ class TTAManager:
 
     def aggregate_masks(self, masks: List[np.ndarray], apply_threshold: bool = True) -> np.ndarray:
         """
+        Aggregate a list of mask arrays via pixel-wise max and optionally apply threshold.
+        
+        Args:
+            masks: List of mask arrays in float32 format (logits).
+            apply_threshold: Whether to apply threshold to create binary mask (default: True).
+                             For testing purposes, this can be set to False to return raw max values.
+            
+        Returns:
+            Float array mask:
+            - If apply_threshold is True: Values are 1.0 where mask is above threshold, 0.0 elsewhere
+            - If apply_threshold is False: Raw max mask values (float array).
+        """
+        # Stack masks along a new axis and calculate max value per pixel
+        # This should create more expansive masks compared to mean aggregation
+        max_mask = np.max(np.stack(masks, axis=0), axis=0)
+        
+        # Apply threshold to get binary mask if requested
+        if apply_threshold:
+            # Convert boolean mask to float (1.0 and 0.0) to avoid issues with tensor operations
+            return (max_mask > self.threshold).astype(np.float32)
+        else:
+            return max_mask
+
+    def aggregate_masks_mean(self, masks: List[np.ndarray], apply_threshold: bool = True) -> np.ndarray:
+        """
         Aggregate a list of mask arrays via pixel-wise mean and optionally apply threshold.
         
         Args:
