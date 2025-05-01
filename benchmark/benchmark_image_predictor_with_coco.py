@@ -38,7 +38,13 @@ RESULTS_DIR = os.path.join(DATA_DIR, "results")
 VIS_DIR = os.path.join(RESULTS_DIR, "visualizations")  # Directory for mask visualizations
 COCO_VAL_IMAGES_URL = "http://images.cocodataset.org/zips/val2017.zip"
 COCO_VAL_ANNOTATIONS_URL = "http://images.cocodataset.org/annotations/annotations_trainval2017.zip"
+
+# Default CLI argument values
 MAX_IMAGES = 50  # Limit for quick testing, set to None for full dataset
+
+# Model IDs (for Huggingface)
+SAM2_MODEL_ID = "facebook/sam2-hiera-tiny"
+# SAM2_MODEL_ID = "facebook/sam2-hiera-base-plus"
 
 
 def setup_directories():
@@ -107,7 +113,7 @@ def initialize_predictors(device="cuda" if torch.cuda.is_available() else "cpu")
     
     # Build the model
     sam2_model = build_sam2_hf(
-        model_id="facebook/sam2-hiera-base-plus",
+        model_id=SAM2_MODEL_ID,
         device=device
     )
     
