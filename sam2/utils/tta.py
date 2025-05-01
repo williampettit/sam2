@@ -37,11 +37,11 @@ class TTAManager:
             # (ImageOps.flip, lambda m: np.flip(m, axis=-2)),  # vertical flip
             # (lambda img: img.rotate(90, expand=True), lambda m: np.rot90(m, k=3, axes=(1,2))),  # rotate 90
             # (lambda img: img.rotate(270, expand=True), lambda m: np.rot90(m, k=1, axes=(1,2))),  # rotate 270
-            (pil_grayscale, lambda m: m),  # grayscale
-            (pil_adjust_brightness, lambda m: m),  # brightness
-            (pil_adjust_contrast, lambda m: m),  # contrast
-            (pil_adjust_saturation, lambda m: m),  # saturation
-            (pil_adjust_hue, lambda m: m),  # hue
+            (lambda img: pil_grayscale(img, factor=1.1), lambda m: m),  # grayscale
+            (lambda img: pil_adjust_brightness(img, factor=1.1), lambda m: m),  # brightness
+            (lambda img: pil_adjust_contrast(img, factor=1.1), lambda m: m),  # contrast
+            (lambda img: pil_adjust_saturation(img, factor=1.1), lambda m: m),  # saturation
+            (lambda img: pil_adjust_hue(img, factor=0.25), lambda m: m),  # hue
         ]
 
     def apply_augmentations(self, image: torch.Tensor) -> List[Tuple[torch.Tensor, Callable[[torch.Tensor], torch.Tensor]]]:
