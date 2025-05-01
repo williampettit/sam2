@@ -310,7 +310,9 @@ def process_single_video(predictor, video_path, output_path, use_tta=False, box=
             # For logits, we need to check if they're already in probability space
             if raw_mask.max() > 1.0 or raw_mask.min() < 0.0:
                 # These are logits, apply sigmoid first
-                mask_probs = 1 / (1 + np.exp(-raw_mask))
+                # Clip extreme values to prevent overflow in exp function
+                clipped_mask = np.clip(raw_mask, -80.0, 80.0)  # Prevent overflow in exp
+                mask_probs = 1 / (1 + np.exp(-clipped_mask))
                 mask = (mask_probs > predictor.mask_threshold).astype(np.uint8)
             else:
                 # These are already probabilities
