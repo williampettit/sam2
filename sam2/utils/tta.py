@@ -20,7 +20,7 @@ from sam2.utils.transforms import (
 )
 
 
-type TTAAugmentationName = Literal[
+TTAAugmentationName = Literal[
     "horizontal_flip",
     "vertical_flip",
     "rotate_90",
@@ -76,7 +76,7 @@ TTA_AUGMENTATION_MAP: Dict[TTAAugmentationName, TTAAugmentationPair] = {
 }
 
 
-type TTAAggregationMethod = Literal["max", "mean"]
+TTAAggregationMethod = Literal["max", "mean"]
 
 
 class TTAManager:
