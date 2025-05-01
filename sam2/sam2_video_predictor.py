@@ -560,9 +560,9 @@ class SAM2VideoPredictor(SAM2Base):
         reverse=False,
     ):
         """
-        TTA-enabled version of propagate_in_video: apply test-time augmentations to each frame
-        during tracking to improve mask quality. This method follows the same workflow as the
-        original propagate_in_video but applies augmentations to each frame before prediction.
+        TTA-enabled version of propagate_in_video: apply test-time augmentations only to conditioning
+        frames (frames with prompts) and use regular propagation for other frames. This approach
+        preserves memory tracking while still benefiting from TTA on the most critical frames.
         
         Arguments are the same as propagate_in_video.
         """
@@ -594,124 +594,123 @@ class SAM2VideoPredictor(SAM2Base):
                 start_frame_idx + max_frame_num_to_track, num_frames - 1
             )
             processing_order = range(start_frame_idx, end_frame_idx + 1)
+            
+        # Identify conditioning frames for each object (frames that have prompts)
+        conditioning_frames = set()
+        for obj_idx in range(batch_size):
+            obj_output_dict = inference_state["output_dict_per_obj"][obj_idx]
+            conditioning_frames.update(obj_output_dict["cond_frame_outputs"].keys())
+            
+        print(f"Applying TTA to {len(conditioning_frames)} conditioning frames: {sorted(conditioning_frames)}")
 
         for frame_idx in tqdm(processing_order, desc="propagate in video with TTA"):
             pred_masks_per_obj = [None] * batch_size
             for obj_idx in range(batch_size):
                 obj_output_dict = inference_state["output_dict_per_obj"][obj_idx]
-                # We skip those frames already in consolidated outputs (these are frames
-                # that received input clicks or mask). Note that we cannot directly run
-                # batched forward on them via `_run_single_frame_inference` because the
-                # number of clicks on each object might be different.
-                if frame_idx in obj_output_dict["cond_frame_outputs"]:
+                
+                # Check if this is a conditioning frame for this object
+                is_cond_frame = frame_idx in obj_output_dict["cond_frame_outputs"]
+                
+                if is_cond_frame:
+                    # This is a conditioning frame (has prompts) - use the existing output
                     storage_key = "cond_frame_outputs"
                     current_out = obj_output_dict[storage_key][frame_idx]
                     device = inference_state["device"]
                     pred_masks = current_out["pred_masks"].to(device, non_blocking=True)
+                    
                     if self.clear_non_cond_mem_around_input:
                         # clear non-conditioning memory of the surrounding frames
                         self._clear_obj_non_cond_mem_around_input(
                             inference_state, frame_idx, obj_idx
                         )
                 else:
+                    # This is a regular frame (no prompts)
                     storage_key = "non_cond_frame_outputs"
                     
-                    # Extract the current frame image
-                    device = inference_state["device"]
-                    frame_image = inference_state["images"][frame_idx].to(device).float().unsqueeze(0)
-                    
-                    # For TTA in video, we need a different approach than for images
-                    # We'll run the regular inference first to get the base prediction
-                    base_out, base_pred_masks = self._run_single_frame_inference(
-                        inference_state=inference_state,
-                        output_dict=obj_output_dict,
-                        frame_idx=frame_idx,
-                        batch_size=1,
-                        is_init_cond_frame=False,
-                        point_inputs=None,
-                        mask_inputs=None,
-                        reverse=reverse,
-                        run_mem_encoder=False,  # Important: don't update memory yet
-                    )
-                    
-                    # Store the original memory state before TTA
-                    # We'll restore this after all augmentations
-                    original_output_dict = copy.deepcopy(obj_output_dict)
-                    
-                    # Apply TTA to the current frame
-                    # Convert tensor to PIL image for TTA
-                    frame_np = frame_image.squeeze(0).permute(1, 2, 0).cpu().numpy()
-                    frame_np = (frame_np * 255).astype(np.uint8)
-                    pil_frame = PILImage.fromarray(frame_np)
-                    
-                    # Collect masks from all augmentations
-                    mask_list = []
-                    
-                    # First, add the base prediction to the mask list
-                    base_mask_np = base_pred_masks.squeeze(0).float().cpu().numpy()
-                    mask_list.append(base_mask_np)
-                    
-                    # Process each augmentation
-                    for i, (aug_fn, deaug_fn) in enumerate(self._tta_manager.pil_augmentations):
-                        # Skip the identity augmentation (already handled with base_pred_masks)
-                        # Identity augmentation is typically the first one in the list
-                        if i == 0:  # Assuming first augmentation is identity
-                            continue
+                    # Check if this is one of the frames we should apply TTA to
+                    if frame_idx in conditioning_frames:
+                        # Special case: This is a conditioning frame for another object
+                        # Apply TTA for this frame
+                        device = inference_state["device"]
+                        frame_image = inference_state["images"][frame_idx].to(device).float().unsqueeze(0)
+                        frame_np = frame_image.squeeze(0).permute(1, 2, 0).cpu().numpy()
+                        frame_np = (frame_np * 255).astype(np.uint8)
+                        pil_frame = PILImage.fromarray(frame_np)
+                        
+                        # Collect masks from all augmentations
+                        mask_list = []
+                        
+                        # Apply each augmentation
+                        for aug_fn, deaug_fn in self._tta_manager.pil_augmentations:
+                            # Apply augmentation to frame
+                            aug_frame = aug_fn(pil_frame)
+                            # Convert back to tensor
+                            aug_np = np.array(aug_frame).astype(np.float32) / 255.0
+                            aug_tensor = torch.from_numpy(aug_np).permute(2, 0, 1).unsqueeze(0).to(device)
                             
-                        # Apply augmentation to frame
-                        aug_frame = aug_fn(pil_frame)
+                            # Store original image
+                            original_image = inference_state["images"][frame_idx]
+                            # Temporarily replace with augmented image
+                            inference_state["images"][frame_idx] = aug_tensor.squeeze(0)
+                            
+                            # Create a temporary copy of the output_dict to avoid memory corruption
+                            temp_output_dict = copy.deepcopy(obj_output_dict)
+                            
+                            # Run inference with augmented image
+                            aug_out, aug_pred_masks = self._run_single_frame_inference(
+                                inference_state=inference_state,
+                                output_dict=temp_output_dict,  # Use temporary copy
+                                frame_idx=frame_idx,
+                                batch_size=1,
+                                is_init_cond_frame=False,
+                                point_inputs=None,
+                                mask_inputs=None,
+                                reverse=reverse,
+                                run_mem_encoder=False,  # Don't update memory
+                            )
+                            
+                            # Convert to numpy for de-augmentation
+                            aug_mask_np = aug_pred_masks.squeeze(0).float().cpu().numpy()
+                            # De-augment mask
+                            deaug_mask = deaug_fn(aug_mask_np)
+                            mask_list.append(deaug_mask)
+                            
+                            # Restore original image
+                            inference_state["images"][frame_idx] = original_image
+                        
+                        # Aggregate masks using TTA manager
+                        aggregated_mask = self._tta_manager.aggregate_masks(mask_list, apply_threshold=False)
                         # Convert back to tensor
-                        aug_np = np.array(aug_frame).astype(np.float32) / 255.0
-                        aug_tensor = torch.from_numpy(aug_np).permute(2, 0, 1).unsqueeze(0).to(device)
+                        aggregated_tensor = torch.from_numpy(aggregated_mask).to(device).unsqueeze(0)
                         
-                        # Store original image
-                        original_image = inference_state["images"][frame_idx]
-                        # Temporarily replace with augmented image
-                        inference_state["images"][frame_idx] = aug_tensor.squeeze(0)
-                        
-                        # Run inference with augmented image
-                        # Important: use a copy of the original output_dict to avoid memory contamination
-                        aug_output_dict = copy.deepcopy(original_output_dict)
-                        aug_out, aug_pred_masks = self._run_single_frame_inference(
+                        # Run final inference with aggregated mask
+                        current_out, pred_masks = self._run_single_frame_inference(
                             inference_state=inference_state,
-                            output_dict=aug_output_dict,
+                            output_dict=obj_output_dict,
                             frame_idx=frame_idx,
                             batch_size=1,
                             is_init_cond_frame=False,
                             point_inputs=None,
                             mask_inputs=None,
                             reverse=reverse,
-                            run_mem_encoder=False,  # Don't update memory with augmented results
+                            run_mem_encoder=True,  # Update memory
+                            override_pred_masks=aggregated_tensor
                         )
-                        
-                        # Convert to numpy for de-augmentation
-                        aug_mask_np = aug_pred_masks.squeeze(0).float().cpu().numpy()
-                        # De-augment mask
-                        deaug_mask = deaug_fn(aug_mask_np)
-                        mask_list.append(deaug_mask)
-                        
-                        # Restore original image
-                        inference_state["images"][frame_idx] = original_image
+                    else:
+                        # Regular frame processing without TTA
+                        current_out, pred_masks = self._run_single_frame_inference(
+                            inference_state=inference_state,
+                            output_dict=obj_output_dict,
+                            frame_idx=frame_idx,
+                            batch_size=1,
+                            is_init_cond_frame=False,
+                            point_inputs=None,
+                            mask_inputs=None,
+                            reverse=reverse,
+                            run_mem_encoder=True,
+                        )
                     
-                    # Aggregate masks using TTA manager
-                    aggregated_mask = self._tta_manager.aggregate_masks(mask_list, apply_threshold=False)
-                    # Convert back to tensor
-                    aggregated_tensor = torch.from_numpy(aggregated_mask).to(device).unsqueeze(0)
-                    
-                    # Now run the final inference with the aggregated mask
-                    # This will update the memory with the aggregated result
-                    current_out, pred_masks = self._run_single_frame_inference(
-                        inference_state=inference_state,
-                        output_dict=obj_output_dict,
-                        frame_idx=frame_idx,
-                        batch_size=1,
-                        is_init_cond_frame=False,
-                        point_inputs=None,
-                        mask_inputs=None,
-                        reverse=reverse,
-                        run_mem_encoder=True,  # Now update memory with the final result
-                        override_pred_masks=aggregated_tensor
-                    )
+                    # Store the output
                     obj_output_dict[storage_key][frame_idx] = current_out
 
                 inference_state["frames_tracked_per_obj"][obj_idx][frame_idx] = {
