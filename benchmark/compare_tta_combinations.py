@@ -185,7 +185,31 @@ def main():
         # In turn, this will allow us to save on inference time.
         #
         # Results:
-        #   ...
+        #   Grayscale only:
+        #     IoU Improvement: 3.10%
+        #     Boundary F1 Improvement: 2.08%
+        #     Time Increase: 121.51%
+        #
+        #   Grayscale + decrease_brightness
+        #     IoU Improvement: 3.32%
+        #     Boundary F1 Improvement: 2.43%
+        #     Time Increase: 228.22%
+        #
+        #   Grayscale + decrease_contrast
+        #     IoU Improvement: 3.42%
+        #     Boundary F1 Improvement: 2.44%
+        #     Time Increase: 215.22%
+        #
+        #   Grayscale + decrease_saturation
+        #     IoU Improvement: 3.31%
+        #     Boundary F1 Improvement: 2.31%
+        #     Time Increase: 229.74%
+        #
+        #   ... All other combinations are omitted because their performance was equal or worse, while having much higher inference times.
+        #
+        #  Conclusion:
+        #    The metrics above show that 'decrease_contrast' yields the best improvement to IoU and F1, and also happens to have the lowest inference time.
+        #    We will overall conclude that 'grayscale' + 'decrease_contrast' is a good final combination of augmentation ops.
         #
         *generate_combinations_for_experiment_3(skip=False),
     ]
