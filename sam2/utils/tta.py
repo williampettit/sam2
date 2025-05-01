@@ -37,7 +37,7 @@ class TTAManager:
             # (ImageOps.flip, lambda m: np.flip(m, axis=-2)),  # vertical flip
             # (lambda img: img.rotate(90, expand=True), lambda m: np.rot90(m, k=3, axes=(1,2))),  # rotate 90
             # (lambda img: img.rotate(270, expand=True), lambda m: np.rot90(m, k=1, axes=(1,2))),  # rotate 270
-            (lambda img: pil_grayscale(img, factor=1.1), lambda m: m),  # grayscale
+            (lambda img: pil_grayscale(img), lambda m: m),  # grayscale
             (lambda img: pil_adjust_brightness(img, factor=1.1), lambda m: m),  # brightness
             (lambda img: pil_adjust_contrast(img, factor=1.1), lambda m: m),  # contrast
             (lambda img: pil_adjust_saturation(img, factor=1.1), lambda m: m),  # saturation
