@@ -84,6 +84,29 @@ def main() -> None:
         np.random.seed(args.seed)
         torch.manual_seed(args.seed)
 
+    # --- Find max dimensions --- START
+    max_h, max_w = 0, 0
+    img_files = sorted(
+        f for f in os.listdir(args.images_dir)
+        if f.lower().endswith((".png", ".jpg", ".jpeg"))
+    )
+    if not img_files:
+        print(f"No images found in {args.images_dir}")
+        sys.exit(1)
+
+    print(f"Scanning {len(img_files)} images for dimensions...")
+    for fname in img_files:
+        path = os.path.join(args.images_dir, fname)
+        try:
+            with Image.open(path) as img:
+                w, h = img.size
+                max_h = max(max_h, h)
+                max_w = max(max_w, w)
+        except Exception as e:
+            print(f"Warning: Could not read image {fname}: {e}")
+    print(f"Max dimensions found: H={max_h}, W={max_w}")
+    # --- Find max dimensions --- END
+
     model_id = f"facebook/sam2-hiera-{args.model_size}"
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Building SAM2 model {model_id} on {device}...")
@@ -95,52 +118,77 @@ def main() -> None:
         tta_agg_method=args.tta_agg_method,
     )
 
-    # collect images
-    img_files = sorted(
-        f for f in os.listdir(args.images_dir)
-        if f.lower().endswith((".png", ".jpg", ".jpeg"))
-    )
-    if not img_files:
-        print(f"No images found in {args.images_dir}")
-        sys.exit(1)
-
     rows = []
-    for fname in img_files:
+    for i, fname in enumerate(img_files):
         path = os.path.join(args.images_dir, fname)
-        img = Image.open(path).convert("RGB")
-        image = np.array(img)
-        h, w = image.shape[:2]
-        box = np.array([0, 0, w, h])
+        print(f"Processing image {i+1}/{len(img_files)}: {fname}...")
+        try:
+            img = Image.open(path).convert("RGB")
+            image = np.array(img)
+            h, w = image.shape[:2]
+            box = np.array([0, 0, w, h])
 
-        # baseline prediction
-        predictor.set_image(image)
-        masks_b, _, _ = predictor.predict(
-            point_coords=None,
-            point_labels=None,
-            box=box,
-            multimask_output=False,
-        )
-        mask_base = masks_b[0]
+            # baseline prediction
+            predictor.set_image(image)
+            masks_b, _, _ = predictor.predict(
+                point_coords=None,
+                point_labels=None,
+                box=box,
+                multimask_output=False,
+            )
+            mask_base = masks_b[0]
 
-        # TTA prediction
-        predictor_tta.set_image(image)
-        masks_t, _, _ = predictor_tta.predict(
-            point_coords=None,
-            point_labels=None,
-            box=box,
-            multimask_output=False,
-        )
-        mask_tta = masks_t[0]
+            # TTA prediction
+            predictor_tta.set_image(image)
+            masks_t, _, _ = predictor_tta.predict(
+                point_coords=None,
+                point_labels=None,
+                box=box,
+                multimask_output=False,
+            )
+            mask_tta = masks_t[0]
 
-        orig_col = image
-        base_col = overlay_mask(image, mask_base, color=(0, 0, 255), alpha=0.5)
-        tta_col = overlay_mask(image, mask_tta, color=(0, 255, 0), alpha=0.5)
+            orig_col = image
+            base_col = overlay_mask(image, mask_base, color=(0, 0, 255), alpha=0.5)
+            tta_col = overlay_mask(image, mask_tta, color=(0, 255, 0), alpha=0.5)
 
-        row = np.concatenate([orig_col, base_col, tta_col], axis=1)
-        rows.append(row)
+            # --- Pad columns to max dimensions --- START
+            pad_h = max_h - h
+            pad_w = max_w - w
+            pad_top = pad_h // 2
+            pad_bottom = pad_h - pad_top
+            pad_left = pad_w // 2
+            pad_right = pad_w - pad_left
+
+            border_args = {
+                "borderType": cv2.BORDER_CONSTANT,
+                "value": [255, 255, 255] # White padding
+            }
+
+            orig_col_padded = cv2.copyMakeBorder(orig_col, pad_top, pad_bottom, pad_left, pad_right, **border_args)
+            base_col_padded = cv2.copyMakeBorder(base_col, pad_top, pad_bottom, pad_left, pad_right, **border_args)
+            tta_col_padded = cv2.copyMakeBorder(tta_col, pad_top, pad_bottom, pad_left, pad_right, **border_args)
+            # --- Pad columns to max dimensions --- END
+
+            row = np.concatenate([orig_col_padded, base_col_padded, tta_col_padded], axis=1)
+            rows.append(row)
+
+        except Exception as e:
+            print(f"\nError processing image {fname}: {e}")
+            print("Skipping this image.\n")
 
     # stack rows vertically into a grid
+    if not rows:
+        print("No images were successfully processed.")
+        sys.exit(1)
+
     grid = np.vstack(rows)
+    
+    # Ensure output directory exists
+    output_dir = os.path.dirname(args.output)
+    if output_dir and not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+
     cv2.imwrite(args.output, grid)
     print(f"Saved demo grid to {args.output}")
 
