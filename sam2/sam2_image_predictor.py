@@ -16,7 +16,7 @@ from PIL import ImageOps, ImageEnhance
 from sam2.modeling.sam2_base import SAM2Base
 
 from sam2.utils.transforms import SAM2Transforms
-from sam2.utils.tta import TTAManager  # TTA manager
+from sam2.utils.tta import TTAManager, TTAAugmentationName, TTAAggregationMethod
 
 
 class SAM2ImagePredictor:
@@ -27,7 +27,7 @@ class SAM2ImagePredictor:
         max_hole_area=0.0,
         max_sprinkle_area=0.0,
         tta_enabled_augmentations: Optional[List[TTAAugmentationName]] = None,
-        tta_agg_method: Optional[AggregationMethod] = None,
+        tta_agg_method: Optional[TTAAggregationMethod] = None,
         **kwargs,
     ) -> None:
         """
