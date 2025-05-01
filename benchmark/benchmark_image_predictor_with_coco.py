@@ -25,6 +25,7 @@ from pathlib import Path
 import cv2
 from pycocotools import mask as mask_utils
 from scipy.ndimage import binary_dilation, binary_erosion, distance_transform_edt
+from typing import get_args
 
 # Add parent directory to path for importing sam2
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -32,12 +33,22 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # Import SAM2 components
 from sam2.sam2_image_predictor import SAM2ImagePredictor
 from sam2.build_sam import build_sam2_hf
+from sam2.utils.tta import TTAAugmentationName, TTAAggregationMethod
 
 
 # Parse arguments
 def parse_args():
-    parser = argparse.ArgumentParser(description="Benchmark SAM2 Image Predictor with and without TTA using COCO dataset")
-    parser.add_argument("--max_images", type=int, default=50, help="Maximum number of images to process")
+    parser = argparse.ArgumentParser(
+        description="Benchmark SAM2 Image Predictor with and without TTA using COCO dataset"
+    )
+    
+    parser.add_argument(
+        "--max_images",
+        type=int,
+        default=50,
+        help="Maximum number of images to process"
+    )
+    
     parser.add_argument(
         "--model_size",
         type=str,
@@ -50,9 +61,38 @@ def parse_args():
             "large",
         ]
     )
-    parser.add_argument("--seed", type=int, default=None, help="Random seed for reproducibility")
+    
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Random seed for reproducibility"
+    )
+    
+    parser.add_argument(
+        "--tta_enabled_augmentations",
+        type=str,
+        default=None,
+        help="Comma-separated list of TTA augmentations to enable",
+        choices=list(get_args(TTAAugmentationName)),
+    )
+
+    parser.add_argument(
+        "--tta_agg_method",
+        type=str,
+        default="max",
+        help="Aggregation method for TTA predictions",
+        choices=list(get_args(TTAAggregationMethod)),
+    )
+
     args = parser.parse_args()
+
+    # Store formatted model ID
     args.model_id = f"facebook/sam2-hiera-{args.model_size}"
+
+    # Store UNIX timestamp for results directory
+    args.timestamp = str(int(time.time()))
+
     return args
 
 
@@ -60,21 +100,30 @@ def parse_args():
 args = parse_args()
 
 
+# Seed random number generator for reproducibility, if CLI arg is provided
+if args.seed is not None:
+    random.seed(args.seed)
+
+
 # Define path and URL constants
 DATA_DIR = os.path.expanduser("~/data/coco_benchmark")
 COCO_DIR = os.path.join(DATA_DIR, "coco2017")
-RESULTS_DIR = os.path.join(DATA_DIR, "results", args.model_size)
+RESULTS_DIR = os.path.join(DATA_DIR, "results", f"{args.model_size}_{args.timestamp}")
 VIS_DIR = os.path.join(RESULTS_DIR, "visualizations")  # Directory for mask visualizations
 COCO_VAL_IMAGES_URL = "http://images.cocodataset.org/zips/val2017.zip"
 COCO_VAL_ANNOTATIONS_URL = "http://images.cocodataset.org/annotations/annotations_trainval2017.zip"
 
 
-def setup_directories():
-    """Create necessary directories for data and results."""
-    os.makedirs(COCO_DIR, exist_ok=True)
-    os.makedirs(os.path.join(COCO_DIR, "annotations"), exist_ok=True)
-    os.makedirs(RESULTS_DIR, exist_ok=True)
-    os.makedirs(VIS_DIR, exist_ok=True)
+# Create necessary directories for data and results
+os.makedirs(COCO_DIR, exist_ok=True)
+os.makedirs(os.path.join(COCO_DIR, "annotations"), exist_ok=True)
+os.makedirs(RESULTS_DIR, exist_ok=True)
+os.makedirs(VIS_DIR, exist_ok=True)
+
+
+# Stash args in results directory
+with open(os.path.join(RESULTS_DIR, "args.json"), "w") as f:
+    json.dump(args.__dict__, f, indent=4)
 
 
 def download_file(url, destination):
@@ -140,9 +189,17 @@ def initialize_predictors(device="cuda" if torch.cuda.is_available() else "cpu")
         device=device
     )
     
+    #
     # Create two predictors - one without TTA, one with TTA
+    #
+
     predictor = SAM2ImagePredictor(sam2_model)
-    predictor_tta = SAM2ImagePredictor(sam2_model)
+
+    predictor_tta = SAM2ImagePredictor(
+        sam2_model,
+        tta_enabled_augmentations=args.tta_enabled_augmentations,
+        tta_agg_method=args.tta_agg_method,
+    )
     
     return predictor, predictor_tta
 
@@ -451,13 +508,6 @@ def visualize_results(results, output_path):
 
 
 def main():
-    # Seed random number generator for reproducibility, if CLI arg is provided
-    if args.seed is not None:
-        random.seed(args.seed)
-
-    # Setup directories
-    setup_directories()
-    
     # Download datasets
     download_datasets()
     
