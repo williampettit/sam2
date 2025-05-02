@@ -22,6 +22,19 @@ from sam2.sam2_image_predictor import SAM2ImagePredictor
 from sam2.utils.tta import TTAAugmentationName, TTAAggregationMethod
 
 
+# images to use for demo, along with the xy point our object is at
+DEMO_IMAGES = [
+  ("./tta_demo/images/IMG_1511.png", (1971, 2110)),
+  ("./tta_demo/images/IMG_1513.png", (1641, 1430)),
+  ("./tta_demo/images/IMG_1518.png", (1752, 1500)),
+  ("./tta_demo/images/IMG_1519.png", (1252, 3180)),
+  ("./tta_demo/images/IMG_1521.png", (1402, 2410)),
+  ("./tta_demo/images/IMG_1522.png", (2122, 3350)),
+  ("./tta_demo/images/IMG_1523.png", (1992, 1960)),
+  ("./tta_demo/images/IMG_3013.png", (2052, 2921)),
+]
+
+
 def overlay_mask(image: np.ndarray, mask: np.ndarray, color: tuple = (0, 0, 255), alpha: float = 0.5) -> np.ndarray:
     """Overlay a binary mask on the image with given color and alpha."""
     overlay = image.copy()
@@ -32,12 +45,6 @@ def overlay_mask(image: np.ndarray, mask: np.ndarray, color: tuple = (0, 0, 255)
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="TTA Demo: compare original vs baseline vs TTA masks"
-    )
-    parser.add_argument(
-        "--images-dir",
-        type=str,
-        default="images",
-        help="Directory containing input images",
     )
     parser.add_argument(
         "--model-size",
@@ -84,26 +91,27 @@ def main() -> None:
         np.random.seed(args.seed)
         torch.manual_seed(args.seed)
 
-    # --- Find max dimensions --- START
+    # --- Find max dimensions from DEMO_IMAGES --- START
     max_h, max_w = 0, 0
-    img_files = sorted(
-        f for f in os.listdir(args.images_dir)
-        if f.lower().endswith((".png", ".jpg", ".jpeg"))
-    )
-    if not img_files:
-        print(f"No images found in {args.images_dir}")
-        sys.exit(1)
-
-    print(f"Scanning {len(img_files)} images for dimensions...")
-    for fname in img_files:
-        path = os.path.join(args.images_dir, fname)
+    valid_demo_images = []
+    print(f"Scanning {len(DEMO_IMAGES)} demo images for dimensions...")
+    for img_path, point_xy in DEMO_IMAGES:
+        if not os.path.exists(img_path):
+            print(f"Warning: Demo image not found, skipping: {img_path}")
+            continue
         try:
-            with Image.open(path) as img:
+            with Image.open(img_path) as img:
                 w, h = img.size
                 max_h = max(max_h, h)
                 max_w = max(max_w, w)
+                valid_demo_images.append((img_path, point_xy))
         except Exception as e:
-            print(f"Warning: Could not read image {fname}: {e}")
+            print(f"Warning: Could not read demo image {img_path}: {e}")
+
+    if not valid_demo_images:
+        print("Error: No valid demo images found or readable.")
+        sys.exit(1)
+
     print(f"Max dimensions found: H={max_h}, W={max_w}")
     # --- Find max dimensions --- END
 
@@ -119,21 +127,21 @@ def main() -> None:
     )
 
     rows = []
-    for i, fname in enumerate(img_files):
-        path = os.path.join(args.images_dir, fname)
-        print(f"Processing image {i+1}/{len(img_files)}: {fname}...")
+    num_images = len(valid_demo_images)
+    for i, (path, point_xy) in enumerate(valid_demo_images):
+        print(f"Processing image {i+1}/{num_images}: {os.path.basename(path)}...")
         try:
             img = Image.open(path).convert("RGB")
             image = np.array(img)
             h, w = image.shape[:2]
-            box = np.array([0, 0, w, h])
+            point_coords_np = np.array([[point_xy]])
+            point_labels_np = np.array([1])
 
             # baseline prediction
             predictor.set_image(image)
             masks_b, _, _ = predictor.predict(
-                point_coords=None,
-                point_labels=None,
-                box=box,
+                point_coords=point_coords_np,
+                point_labels=point_labels_np,
                 multimask_output=False,
             )
             mask_base = masks_b[0]
@@ -141,9 +149,8 @@ def main() -> None:
             # TTA prediction
             predictor_tta.set_image(image)
             masks_t, _, _ = predictor_tta.predict(
-                point_coords=None,
-                point_labels=None,
-                box=box,
+                point_coords=point_coords_np,
+                point_labels=point_labels_np,
                 multimask_output=False,
             )
             mask_tta = masks_t[0]
@@ -174,7 +181,7 @@ def main() -> None:
             rows.append(row)
 
         except Exception as e:
-            print(f"\nError processing image {fname}: {e}")
+            print(f"\nError processing image {path}: {e}")
             print("Skipping this image.\n")
 
     # stack rows vertically into a grid
