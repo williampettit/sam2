@@ -42,6 +42,19 @@ def overlay_mask(image: np.ndarray, mask: np.ndarray, color: tuple = (0, 0, 255)
     return cv2.addWeighted(image, 1 - alpha, overlay, alpha, 0)
 
 
+def draw_marker(image: np.ndarray, point: tuple[int, int], color: tuple = (0, 255, 255), marker_size: int = 40, thickness: int = 4) -> None:
+    """Draw a star marker on the image at the specified point."""
+    cv2.drawMarker(
+        image,
+        point,
+        color,
+        markerType=cv2.MARKER_STAR,
+        markerSize=marker_size,
+        thickness=thickness,
+        line_type=cv2.LINE_AA
+    )
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="TTA Demo: compare original vs baseline vs TTA masks"
@@ -158,6 +171,12 @@ def main() -> None:
             orig_col = image
             base_col = overlay_mask(image, mask_base, color=(0, 0, 255), alpha=0.5)
             tta_col = overlay_mask(image, mask_tta, color=(0, 255, 0), alpha=0.5)
+
+            # --- Draw marker on overlays --- START
+            marker_point = tuple(point_coords_np[0]) # Convert [(x,y)] back to (x,y)
+            draw_marker(base_col, marker_point, color=(0, 255, 255)) # Yellow star
+            draw_marker(tta_col, marker_point, color=(0, 255, 255)) # Yellow star
+            # --- Draw marker on overlays --- END
 
             # --- Pad columns to max dimensions --- START
             pad_h = max_h - h
