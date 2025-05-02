@@ -134,7 +134,7 @@ def main() -> None:
             img = Image.open(path).convert("RGB")
             image = np.array(img)
             h, w = image.shape[:2]
-            point_coords_np = np.array([[point_xy]])
+            point_coords_np = np.array([point_xy])
             point_labels_np = np.array([1])
 
             # baseline prediction
