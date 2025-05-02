@@ -190,7 +190,18 @@ def main() -> None:
         sys.exit(1)
 
     grid = np.vstack(rows)
-    
+
+    # --- Resize final grid --- START
+    target_width = 4000
+    h, w = grid.shape[:2]
+    if w > target_width:
+        scale = target_width / w
+        new_h = int(h * scale)
+        new_w = target_width
+        print(f"Resizing grid from {w}x{h} to {new_w}x{new_h}...")
+        grid = cv2.resize(grid, (new_w, new_h), interpolation=cv2.INTER_AREA)
+    # --- Resize final grid --- END
+
     # Ensure output directory exists
     output_dir = os.path.dirname(args.output)
     if output_dir and not os.path.exists(output_dir):
