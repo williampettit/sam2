@@ -24,14 +24,14 @@ from sam2.utils.tta import TTAAugmentationName, TTAAggregationMethod
 
 # images to use for demo, along with the xy point our object is at
 DEMO_IMAGES = [
-  ("./tta_demo/images/IMG_1511.png", (1971, 2110)),
-  ("./tta_demo/images/IMG_1513.png", (1641, 1430)),
-  ("./tta_demo/images/IMG_1518.png", (1752, 1500)),
-  ("./tta_demo/images/IMG_1519.png", (1252, 3180)),
-  ("./tta_demo/images/IMG_1521.png", (1402, 2410)),
-  ("./tta_demo/images/IMG_1522.png", (2122, 3350)),
-  ("./tta_demo/images/IMG_1523.png", (1992, 1960)),
-  ("./tta_demo/images/IMG_3013.png", (2052, 2921)),
+  ("./tta_demo/images/IMG_1511.jpg", (1971, 2110)),
+  ("./tta_demo/images/IMG_1513.jpg", (1641, 1430)),
+  ("./tta_demo/images/IMG_1518.jpg", (1752, 1500)),
+  ("./tta_demo/images/IMG_1519.jpg", (1252, 3180)),
+  ("./tta_demo/images/IMG_1521.jpg", (1402, 2410)),
+  ("./tta_demo/images/IMG_1522.jpg", (2122, 3350)),
+  ("./tta_demo/images/IMG_1523.jpg", (1992, 1960)),
+  ("./tta_demo/images/IMG_3013.jpg", (2052, 2921)),
 ]
 
 
